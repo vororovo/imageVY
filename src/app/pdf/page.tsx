@@ -91,8 +91,8 @@ export default function PdfEditorPage() {
     setError(null);
     try {
       const bytes = await mergePdfs(files.map((f) => f.file));
-      // bytes.buffer를 사용하거나, 확실하게 호환되는 타입으로 명시합니다.
-      setResultBlob(new Blob([bytes.buffer], { type: "application/pdf" }));
+      // bytes(Uint8Array)를 BufferSource 형태로 명시적으로 지정하거나 임시 우회합니다.
+      setResultBlob(new Blob([bytes as any], { type: "application/pdf" }));
     } catch {
       setError("PDF 병합에 실패했습니다.");
     } finally {
