@@ -46,6 +46,7 @@ import {
   type GeminiNccCache,
   type WatermarkMethod,
 } from "@/lib/image/watermark-removal";
+import { DEFAULT_GEMINI_EDGE_FEATHER } from "@/lib/image/gemini-edge-feather";
 
 type Tab = "resize" | "watermark";
 
@@ -79,6 +80,12 @@ export default function ImageEditorPage() {
   const [autoApplyGeminiPreset, setAutoApplyGeminiPreset] = useState(false);
   const [geminiDetected, setGeminiDetected] = useState<boolean | null>(null);
   const [geminiCache, setGeminiCache] = useState<GeminiNccCache | null>(null);
+  const [geminiEdgeFeatherEnabled, setGeminiEdgeFeatherEnabled] = useState(
+    DEFAULT_GEMINI_EDGE_FEATHER.enabled,
+  );
+  const [geminiEdgePaddingPx, setGeminiEdgePaddingPx] = useState(
+    DEFAULT_GEMINI_EDGE_FEATHER.paddingPx,
+  );
   const [maskLightboxOpen, setMaskLightboxOpen] = useState(false);
   const [previewLightboxOpen, setPreviewLightboxOpen] = useState(false);
   const [watermarkZoomPercent, setWatermarkZoomPercent] = useState(DEFAULT_ZOOM_PERCENT);
@@ -480,6 +487,8 @@ export default function ImageEditorPage() {
                         geminiOptimized={geminiPresetActive}
                         geminiManualMode={geminiManualActive}
                         geminiCache={geminiCache}
+                        geminiEdgeFeatherEnabled={geminiEdgeFeatherEnabled}
+                        geminiEdgePaddingPx={geminiEdgePaddingPx}
                         onDetectedRegion={geminiManualActive ? undefined : handleDetectedRegion}
                         onGeminiDetected={handleGeminiDetected}
                         onGeminiCacheReady={setGeminiCache}
@@ -774,6 +783,53 @@ export default function ImageEditorPage() {
                         </div>
                       </label>
 
+                      {watermarkMethod === "inverse-alpha" && geminiPresetActive && (
+                        <div className="space-y-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-4 py-3">
+                          <label className="flex items-start gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={geminiEdgeFeatherEnabled}
+                              onChange={(e) =>
+                                setGeminiEdgeFeatherEnabled(e.target.checked)
+                              }
+                              className="mt-0.5 rounded"
+                            />
+                            <span>
+                              <span className="block font-medium text-[var(--color-foreground)]">
+                                외곽선 패딩 보정
+                              </span>
+                              <span className="mt-0.5 block text-xs text-[var(--color-muted)]">
+                                ✦ 윤곽·테두리 잔상을 주변 배경색으로 부드럽게 페더합니다.
+                              </span>
+                            </span>
+                          </label>
+
+                          {geminiEdgeFeatherEnabled && (
+                            <label className="block text-sm">
+                              <span className="mb-1.5 block text-[var(--color-muted)]">
+                                외곽 패딩 ({geminiEdgePaddingPx}px)
+                              </span>
+                              <input
+                                type="range"
+                                min={1}
+                                max={8}
+                                step={1}
+                                value={geminiEdgePaddingPx}
+                                onChange={(e) =>
+                                  setGeminiEdgePaddingPx(Number(e.target.value))
+                                }
+                                className="w-full"
+                              />
+                              <div className="mt-1 flex justify-between text-xs text-[var(--color-muted)]">
+                                <span>1px (약함)</span>
+                                <span>3px (기본)</span>
+                                <span>8px (강함)</span>
+                              </div>
+                            </label>
+                          )}
+                        </div>
+                      )}
+
                       {watermarkMethod === "inverse-alpha" && (
                         <label className="block text-sm">
                           <span className="mb-1.5 block text-[var(--color-muted)]">
@@ -986,6 +1042,8 @@ export default function ImageEditorPage() {
               geminiOptimized={geminiPresetActive}
               geminiManualMode={geminiManualActive}
               geminiCache={geminiCache}
+              geminiEdgeFeatherEnabled={geminiEdgeFeatherEnabled}
+              geminiEdgePaddingPx={geminiEdgePaddingPx}
               zoomPercent={watermarkZoomPercent}
               onZoomPercentChange={setWatermarkZoomPercent}
               scrollPosition={watermarkScroll}

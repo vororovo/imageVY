@@ -21,10 +21,6 @@ import {
   type WatermarkMethod,
 } from "@/lib/image/watermark-removal";
 
-function geminiCacheKeyMatches(cacheImageKey: string, imageKey: string): boolean {
-  return cacheImageKey === imageKey || cacheImageKey.startsWith(`${imageKey}#`);
-}
-
 type WatermarkPreviewCanvasProps = {
   imageUrl: string;
   naturalWidth: number;
@@ -39,6 +35,8 @@ type WatermarkPreviewCanvasProps = {
   geminiOptimized?: boolean;
   geminiManualMode?: boolean;
   geminiCache?: GeminiNccCache | null;
+  geminiEdgeFeatherEnabled?: boolean;
+  geminiEdgePaddingPx?: number;
   onDetectedRegion?: (region: Region) => void;
   onGeminiDetected?: (detected: boolean) => void;
   onGeminiCacheReady?: (cache: GeminiNccCache) => void;
@@ -54,6 +52,10 @@ type WatermarkPreviewCanvasProps = {
   viewportMaxHeight?: string;
 };
 
+function geminiCacheKeyMatches(cacheImageKey: string, imageKey: string): boolean {
+  return cacheImageKey === imageKey || cacheImageKey.startsWith(`${imageKey}#`);
+}
+
 export function WatermarkPreviewCanvas({
   imageUrl,
   naturalWidth,
@@ -68,6 +70,8 @@ export function WatermarkPreviewCanvas({
   geminiOptimized = false,
   geminiManualMode = false,
   geminiCache: externalCache = null,
+  geminiEdgeFeatherEnabled = true,
+  geminiEdgePaddingPx = 3,
   onDetectedRegion,
   onGeminiDetected,
   onGeminiCacheReady,
@@ -282,6 +286,12 @@ export function WatermarkPreviewCanvas({
       colorTolerance,
       geminiOptimized,
       geminiCache: cache ?? undefined,
+      geminiEdgeFeather: geminiOptimized
+        ? {
+            enabled: geminiEdgeFeatherEnabled,
+            paddingPx: geminiEdgePaddingPx,
+          }
+        : undefined,
     });
 
     canvas.width = naturalWidth;
@@ -299,6 +309,8 @@ export function WatermarkPreviewCanvas({
     colorTolerance,
     geminiOptimized,
     geminiManualMode,
+    geminiEdgeFeatherEnabled,
+    geminiEdgePaddingPx,
     ensureGeminiCache,
   ]);
 

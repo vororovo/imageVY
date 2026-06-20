@@ -20,11 +20,19 @@ import {
   getSparkleTemplateAtSize,
   type SparkleTemplate,
 } from "@/lib/image/sparkle-template";
+import {
+  applyGeminiEdgeFeather,
+  stabilizeGeminiRemovalToBackground,
+  type GeminiEdgeFeatherOptions,
+} from "@/lib/image/gemini-edge-feather";
+
+export type { GeminiEdgeFeatherOptions };
 
 export type GeminiNccOptions = {
   /** 알파 맵 강도 보정 (1.0 = 보정 없음) */
   globalAlpha: number;
   logoColor: { r: number; g: number; b: number };
+  edgeFeather?: GeminiEdgeFeatherOptions;
 };
 
 export type GeminiNccCache = {
@@ -138,18 +146,6 @@ export function applyGeminiTemplateInverseAlpha(
       let r = (data[pi] - alpha * logo[0]) / oneMinusAlpha;
       let g = (data[pi + 1] - alpha * logo[1]) / oneMinusAlpha;
       let b = (data[pi + 2] - alpha * logo[2]) / oneMinusAlpha;
-
-      if (brightWatermark) {
-        const maxDrop = 35 + alpha * 40;
-        r = Math.max(r, data[pi] - maxDrop);
-        g = Math.max(g, data[pi + 1] - maxDrop);
-        b = Math.max(b, data[pi + 2] - maxDrop);
-      } else {
-        const maxRise = 35 + alpha * 40;
-        r = Math.min(r, data[pi] + maxRise);
-        g = Math.min(g, data[pi + 1] + maxRise);
-        b = Math.min(b, data[pi + 2] + maxRise);
-      }
 
       data[pi] = clampChannel(r);
       data[pi + 1] = clampChannel(g);
@@ -384,6 +380,18 @@ function applyRefinedGeminiRemoval(
 
   let result = pickBestAlphaGainRemoval(source, match, template, options, brightWatermark);
   result = refineOutlineResidual(source, match, template, options, brightWatermark, result);
+
+  stabilizeGeminiRemovalToBackground(
+    result.image,
+    source,
+    match,
+    template,
+    brightWatermark,
+  );
+
+  if (options.edgeFeather?.enabled) {
+    applyGeminiEdgeFeather(result.image, source, match, template, options.edgeFeather);
+  }
 
   imageData.data.set(result.image.data);
 }

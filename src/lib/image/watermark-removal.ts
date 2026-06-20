@@ -1,6 +1,7 @@
 import {
   applyGeminiWithCache,
   buildGeminiCache,
+  type GeminiEdgeFeatherOptions,
   type GeminiNccCache,
 } from "@/lib/image/gemini-ncc-removal";
 import { applyInverseAlphaBlend, type RgbColor } from "@/lib/image/inverse-alpha";
@@ -19,6 +20,7 @@ export type WatermarkProcessOptions = {
   colorTolerance: number;
   geminiOptimized?: boolean;
   geminiCache?: GeminiNccCache;
+  geminiEdgeFeather?: GeminiEdgeFeatherOptions;
 };
 
 export type WatermarkProcessResult = {
@@ -53,6 +55,7 @@ export function createProcessedWatermark(
     applyGeminiWithCache(copy, cache, {
       globalAlpha: options.alpha,
       logoColor: options.color,
+      edgeFeather: options.geminiEdgeFeather,
     });
 
     return {
