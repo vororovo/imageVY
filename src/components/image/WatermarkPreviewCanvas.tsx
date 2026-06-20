@@ -10,7 +10,6 @@ import {
 } from "@/components/ui/ImageZoomControls";
 import { getObjectContainLayout } from "@/lib/image/display-layout";
 import {
-  buildGeminiCache,
   type GeminiNccCache,
 } from "@/lib/image/gemini-ncc-removal";
 import { hexToRgb } from "@/lib/image/inverse-alpha";
@@ -71,7 +70,7 @@ export function WatermarkPreviewCanvas({
   geminiManualMode = false,
   geminiCache: externalCache = null,
   geminiEdgeFeatherEnabled = true,
-  geminiEdgePaddingPx = 3,
+  geminiEdgePaddingPx = 4,
   onDetectedRegion,
   onGeminiDetected,
   onGeminiCacheReady,
@@ -183,26 +182,19 @@ export function WatermarkPreviewCanvas({
     (source: ImageData, imageKey: string): GeminiNccCache | null => {
       if (!geminiOptimized) return null;
 
-      if (externalCache) {
+      if (externalCache && geminiCacheKeyMatches(externalCache.imageKey, imageKey)) {
         geminiCacheRef.current = externalCache;
         return externalCache;
       }
 
-      if (geminiManualMode) return null;
+      if (geminiManualMode) return externalCache ?? null;
 
       const cached = geminiCacheRef.current;
       if (cached && cached.imageKey === imageKey) {
         return cached;
       }
 
-      const built = buildGeminiCache(source, imageKey);
-      geminiCacheRef.current = built;
-
-      onDetectedRegionRef.current?.(built.region);
-      onGeminiDetectedRef.current?.(built.detected);
-      onGeminiCacheReadyRef.current?.(built);
-
-      return built;
+      return null;
     },
     [geminiOptimized, geminiManualMode, externalCache],
   );
@@ -269,7 +261,7 @@ export function WatermarkPreviewCanvas({
       ? ensureGeminiCache(source, imageKeyRef.current)
       : null;
 
-    if (geminiOptimized && geminiManualMode && !cache) {
+    if (geminiOptimized && !cache) {
       canvas.width = naturalWidth;
       canvas.height = naturalHeight;
       ctx.putImageData(source, 0, 0);
@@ -286,7 +278,7 @@ export function WatermarkPreviewCanvas({
       colorTolerance,
       geminiOptimized,
       geminiCache: cache ?? undefined,
-      geminiEdgeFeather: geminiOptimized
+      geminiEdgeFeather: geminiOptimized || geminiManualMode
         ? {
             enabled: geminiEdgeFeatherEnabled,
             paddingPx: geminiEdgePaddingPx,

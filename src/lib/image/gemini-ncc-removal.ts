@@ -43,6 +43,13 @@ export type GeminiNccCache = {
   detected: boolean;
   imageKey: string;
   brightWatermark: boolean;
+  /** build 시 1회 계산 — 미리보기마다 gain sweep/refine 반복 방지 */
+  removalPlan?: GeminiRemovalPlan;
+};
+
+export type GeminiRemovalPlan = {
+  template: SparkleTemplate;
+  alphaGain: number;
 };
 
 const ALPHA_NOISE_FLOOR = 3 / 255;
@@ -221,6 +228,7 @@ type RemovalEvaluation = {
   suppression: number;
   darkArtifactRatio: number;
   gain: number;
+  template: SparkleTemplate;
 };
 
 function evaluateRemoval(
@@ -253,6 +261,7 @@ function evaluateRemoval(
       brightWatermark,
     ),
     gain,
+    template,
   };
 }
 
@@ -316,6 +325,27 @@ function pickBestAlphaGainRemoval(
   return best;
 }
 
+const DEFAULT_REMOVAL_OPTIONS: GeminiNccOptions = {
+  globalAlpha: 1,
+  logoColor: { r: 255, g: 255, b: 255 },
+};
+
+/** 탐지 직후 1회 실행 — 최적 gain·템플릿을 캐시에 저장 */
+export function computeGeminiRemovalPlan(
+  source: ImageData,
+  match: WatermarkMatchResult,
+  template: SparkleTemplate,
+  brightWatermark: boolean,
+  options: GeminiNccOptions = DEFAULT_REMOVAL_OPTIONS,
+): GeminiRemovalPlan {
+  let result = pickBestAlphaGainRemoval(source, match, template, options, brightWatermark);
+  result = refineOutlineResidual(source, match, template, options, brightWatermark, result);
+  return {
+    template: result.template,
+    alphaGain: result.gain,
+  };
+}
+
 function refineOutlineResidual(
   source: ImageData,
   match: WatermarkMatchResult,
@@ -376,13 +406,26 @@ function applyRefinedGeminiRemoval(
   options: GeminiNccOptions,
 ): void {
   const source = cloneImageData(imageData);
-  const { match, template, brightWatermark } = cache;
+  const { match, brightWatermark, removalPlan } = cache;
+  const template = removalPlan?.template ?? cache.template;
+  const baseGain = removalPlan?.alphaGain ?? 1;
+  const userGain =
+    Number.isFinite(options.globalAlpha) && options.globalAlpha > 0
+      ? options.globalAlpha
+      : 1;
+  const effectiveGain = baseGain * userGain;
 
-  let result = pickBestAlphaGainRemoval(source, match, template, options, brightWatermark);
-  result = refineOutlineResidual(source, match, template, options, brightWatermark, result);
+  const copy = cloneImageData(imageData);
+  applyGeminiTemplateInverseAlpha(
+    copy,
+    match,
+    template,
+    { ...options, globalAlpha: effectiveGain },
+    brightWatermark,
+  );
 
   stabilizeGeminiRemovalToBackground(
-    result.image,
+    copy,
     source,
     match,
     template,
@@ -390,10 +433,10 @@ function applyRefinedGeminiRemoval(
   );
 
   if (options.edgeFeather?.enabled) {
-    applyGeminiEdgeFeather(result.image, source, match, template, options.edgeFeather);
+    applyGeminiEdgeFeather(copy, source, match, template, options.edgeFeather);
   }
 
-  imageData.data.set(result.image.data);
+  imageData.data.set(copy.data);
 }
 
 export function buildGeminiCache(
@@ -416,8 +459,9 @@ export function buildGeminiCache(
     height,
   );
   const region = padRegionAroundMatch(tightRegion, width, height);
+  const removalPlan = computeGeminiRemovalPlan(imageData, match, template, brightWatermark);
 
-  return { match, template, region, detected, imageKey, brightWatermark };
+  return { match, template, region, detected, imageKey, brightWatermark, removalPlan };
 }
 
 export function resolveGeminiAlphaMapKeyForImage(
@@ -463,6 +507,12 @@ export function buildGeminiManualCache(
 
   const brightWatermark = detectBrightWatermark(data, width, alignedMatch, template);
   const region = padRegionAroundMatch(clamped, width, height);
+  const removalPlan = computeGeminiRemovalPlan(
+    imageData,
+    alignedMatch,
+    template,
+    brightWatermark,
+  );
 
   return {
     match: alignedMatch,
@@ -471,6 +521,7 @@ export function buildGeminiManualCache(
     detected: true,
     imageKey: `${imageKey}#manual`,
     brightWatermark,
+    removalPlan,
   };
 }
 

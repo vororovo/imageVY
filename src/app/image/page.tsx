@@ -18,6 +18,7 @@ import {
 import { INITIAL_VIEWER_SCROLL, type ViewerScroll } from "@/lib/image/viewer-scroll";
 import { ImageRegionSelector } from "@/components/image/ImageRegionSelector";
 import { WatermarkPreviewCanvas } from "@/components/image/WatermarkPreviewCanvas";
+import { GeminiEdgeFeatherControls } from "@/components/image/GeminiEdgeFeatherControls";
 import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import {
   DEFAULT_ZOOM_PERCENT,
@@ -322,11 +323,20 @@ export default function ImageEditorPage() {
   const handleApplyGeminiPreset = async () => {
     if (!source) return;
     setError(null);
+    setProcessing(true);
     try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const img = await loadImageFromFile(source.file);
-      applyGeminiPresetToImage(img, source.objectUrl);
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          applyGeminiPresetToImage(img, source.objectUrl);
+          resolve();
+        });
+      });
     } catch {
       setError("Gemini 프리셋 적용에 실패했습니다.");
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -671,6 +681,13 @@ export default function ImageEditorPage() {
                         수동 영역 기준 역알파 제거 적용됨 — 영역을 바꾸면 다시 버튼을 눌러 주세요.
                       </p>
                     )}
+                    <GeminiEdgeFeatherControls
+                      className="mt-4"
+                      enabled={geminiEdgeFeatherEnabled}
+                      paddingPx={geminiEdgePaddingPx}
+                      onEnabledChange={setGeminiEdgeFeatherEnabled}
+                      onPaddingChange={setGeminiEdgePaddingPx}
+                    />
                   </div>
 
                   <details className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
@@ -687,10 +704,14 @@ export default function ImageEditorPage() {
                         <button
                           type="button"
                           onClick={handleApplyGeminiPreset}
-                          disabled={!source}
+                          disabled={!source || processing}
                           className="inline-flex items-center justify-center gap-2 rounded-lg border border-violet-500/40 bg-violet-600/80 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50"
                         >
-                          <Sparkles className="h-4 w-4" />
+                          {processing ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Sparkles className="h-4 w-4" />
+                          )}
                           {geminiPresetActive && !geminiManualActive
                             ? "프리셋 다시 적용"
                             : "프리셋 적용"}
@@ -782,53 +803,6 @@ export default function ImageEditorPage() {
                           />
                         </div>
                       </label>
-
-                      {watermarkMethod === "inverse-alpha" && geminiPresetActive && (
-                        <div className="space-y-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-4 py-3">
-                          <label className="flex items-start gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={geminiEdgeFeatherEnabled}
-                              onChange={(e) =>
-                                setGeminiEdgeFeatherEnabled(e.target.checked)
-                              }
-                              className="mt-0.5 rounded"
-                            />
-                            <span>
-                              <span className="block font-medium text-[var(--color-foreground)]">
-                                외곽선 패딩 보정
-                              </span>
-                              <span className="mt-0.5 block text-xs text-[var(--color-muted)]">
-                                ✦ 윤곽·테두리 잔상을 주변 배경색으로 부드럽게 페더합니다.
-                              </span>
-                            </span>
-                          </label>
-
-                          {geminiEdgeFeatherEnabled && (
-                            <label className="block text-sm">
-                              <span className="mb-1.5 block text-[var(--color-muted)]">
-                                외곽 패딩 ({geminiEdgePaddingPx}px)
-                              </span>
-                              <input
-                                type="range"
-                                min={1}
-                                max={8}
-                                step={1}
-                                value={geminiEdgePaddingPx}
-                                onChange={(e) =>
-                                  setGeminiEdgePaddingPx(Number(e.target.value))
-                                }
-                                className="w-full"
-                              />
-                              <div className="mt-1 flex justify-between text-xs text-[var(--color-muted)]">
-                                <span>1px (약함)</span>
-                                <span>3px (기본)</span>
-                                <span>8px (강함)</span>
-                              </div>
-                            </label>
-                          )}
-                        </div>
-                      )}
 
                       {watermarkMethod === "inverse-alpha" && (
                         <label className="block text-sm">

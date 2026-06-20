@@ -14,7 +14,7 @@ export type GeminiEdgeFeatherOptions = {
 
 export const DEFAULT_GEMINI_EDGE_FEATHER: GeminiEdgeFeatherOptions = {
   enabled: true,
-  paddingPx: 3,
+  paddingPx: 4,
 };
 
 function clampChannel(value: number): number {
@@ -23,6 +23,11 @@ function clampChannel(value: number): number {
 
 function clampPadding(paddingPx: number): number {
   return Math.max(1, Math.min(8, Math.round(paddingPx)));
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(1e-6, edge1 - edge0)));
+  return t * t * (3 - 2 * t);
 }
 
 /** morphological dilation on alpha map */
@@ -65,7 +70,7 @@ function estimateBackgroundRgb(
 
   for (let ty = 0; ty < size; ty++) {
     for (let tx = 0; tx < size; tx++) {
-      if (alpha[ty * size + tx] >= 0.035) continue;
+      if (alpha[ty * size + tx] >= 0.03) continue;
       const pi = ((y + ty) * width + (x + tx)) * 4;
       rSum += data[pi];
       gSum += data[pi + 1];
@@ -91,11 +96,11 @@ function sampleRingBackground(
 ): [number, number, number] {
   const { size, alpha } = template;
   const { x: ox, y: oy } = match;
-  const search = 5;
+  const search = 8;
   let rSum = 0;
   let gSum = 0;
   let bSum = 0;
-  let count = 0;
+  let weightSum = 0;
 
   for (let dy = -search; dy <= search; dy++) {
     for (let dx = -search; dx <= search; dx++) {
@@ -108,24 +113,76 @@ function sampleRingBackground(
       if (tx >= 0 && tx < size && ty >= 0 && ty < size) {
         const core = alpha[ty * size + tx];
         const dil = dilatedAlpha[ty * size + tx];
-        if (core >= 0.04 || dil >= 0.06) continue;
+        if (core >= 0.035 || dil >= 0.05) continue;
       }
 
+      const dist = Math.hypot(dx, dy);
+      const weight = 1 / (1 + dist * 0.35);
       const pi = (ny * width + nx) * 4;
-      rSum += data[pi];
-      gSum += data[pi + 1];
-      bSum += data[pi + 2];
-      count++;
+      rSum += data[pi] * weight;
+      gSum += data[pi + 1] * weight;
+      bSum += data[pi + 2] * weight;
+      weightSum += weight;
     }
   }
 
-  if (count === 0) return fallback;
-  return [rSum / count, gSum / count, bSum / count];
+  if (weightSum === 0) return fallback;
+  return [rSum / weightSum, gSum / weightSum, bSum / weightSum];
 }
 
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(1e-6, edge1 - edge0)));
-  return t * t * (3 - 2 * t);
+/** 저알파 윤곽 프린지 — 역블렌딩 잔상을 배경색으로 강하게 평탄화 */
+function flattenOutlineFringe(
+  data: Uint8ClampedArray,
+  originalSource: Uint8ClampedArray,
+  width: number,
+  height: number,
+  match: WatermarkMatchResult,
+  template: SparkleTemplate,
+  dilatedAlpha: Float32Array,
+  fallbackBg: [number, number, number],
+): void {
+  const { size, alpha } = template;
+  const { x: ox, y: oy } = match;
+
+  for (let ty = 0; ty < size; ty++) {
+    for (let tx = 0; tx < size; tx++) {
+      const idx = ty * size + tx;
+      const matte = alpha[idx];
+      if (matte < 0.012 || matte > 0.22) continue;
+
+      const px = ox + tx;
+      const py = oy + ty;
+      if (px < 0 || py < 0 || px >= width || py >= height) continue;
+
+      const fringe =
+        matte < 0.06
+          ? smoothstep(0.012, 0.055, matte)
+          : 1 - smoothstep(0.1, 0.22, matte);
+      if (fringe <= 0.02) continue;
+
+      const pi = (py * width + px) * 4;
+      const [bgR, bgG, bgB] = sampleRingBackground(
+        originalSource,
+        width,
+        height,
+        px,
+        py,
+        match,
+        template,
+        dilatedAlpha,
+        fallbackBg,
+      );
+
+      const strength = 0.55 + fringe * 0.4;
+      let r = data[pi] + (bgR - data[pi]) * strength;
+      let g = data[pi + 1] + (bgG - data[pi + 1]) * strength;
+      let b = data[pi + 2] + (bgB - data[pi + 2]) * strength;
+
+      data[pi] = clampChannel(r);
+      data[pi + 1] = clampChannel(g);
+      data[pi + 2] = clampChannel(b);
+    }
+  }
 }
 
 /**
@@ -147,34 +204,40 @@ export function applyGeminiEdgeFeather(
   const dilated = dilateAlphaMap(alpha, size, paddingPx);
   const fallbackBg = estimateBackgroundRgb(originalSource.data, width, match, template);
 
+  flattenOutlineFringe(
+    data,
+    originalSource.data,
+    width,
+    height,
+    match,
+    template,
+    dilated,
+    fallbackBg,
+  );
+
   for (let ty = 0; ty < size; ty++) {
     for (let tx = 0; tx < size; tx++) {
       const idx = ty * size + tx;
       const coreAlpha = alpha[idx];
       const dilAlpha = dilated[idx];
-      if (dilAlpha < 0.012) continue;
+      if (dilAlpha < 0.01) continue;
 
       const px = ox + tx;
       const py = oy + ty;
       if (px < 0 || py < 0 || px >= width || py >= height) continue;
 
       const pi = (py * width + px) * 4;
-      const origPi = pi;
-      const origR = originalSource.data[origPi];
-      const origG = originalSource.data[origPi + 1];
-      const origB = originalSource.data[origPi + 2];
 
-      const ringBoost = Math.max(0, dilAlpha - coreAlpha * 0.92);
-      const fringeBoost = coreAlpha >= 0.012 && coreAlpha < 0.1 ? 1 - coreAlpha / 0.1 : 0;
-      const paddingBoost =
-        dilAlpha >= 0.04 && coreAlpha < 0.04
-          ? smoothstep(0.04, 0.12, dilAlpha)
+      const ringBoost = Math.max(0, dilAlpha - coreAlpha * 0.88);
+      const outerRing =
+        dilAlpha >= 0.03 && coreAlpha < 0.03
+          ? smoothstep(0.03, 0.14, dilAlpha)
           : 0;
 
-      let feather = Math.max(ringBoost * 1.4, fringeBoost * 0.75, paddingBoost * 0.9);
+      let feather = Math.max(ringBoost * 1.55, outerRing * 0.95);
       feather = Math.max(0, Math.min(1, feather));
 
-      if (feather <= 0.01) continue;
+      if (feather <= 0.008) continue;
 
       const [bgR, bgG, bgB] = sampleRingBackground(
         originalSource.data,
@@ -188,24 +251,14 @@ export function applyGeminiEdgeFeather(
         fallbackBg,
       );
 
-      let r = data[pi];
-      let g = data[pi + 1];
-      let b = data[pi + 2];
+      let r = data[pi] + (bgR - data[pi]) * feather;
+      let g = data[pi + 1] + (bgG - data[pi + 1]) * feather;
+      let b = data[pi + 2] + (bgB - data[pi + 2]) * feather;
 
-      r = r + (bgR - r) * feather;
-      g = g + (bgG - g) * feather;
-      b = b + (bgB - b) * feather;
-
-      const maxDev = 18 + (1 - feather) * 10;
+      const maxDev = 14 + (1 - feather) * 8;
       r = Math.max(bgR - maxDev, Math.min(bgR + maxDev, r));
       g = Math.max(bgG - maxDev, Math.min(bgG + maxDev, g));
       b = Math.max(bgB - maxDev, Math.min(bgB + maxDev, b));
-
-      if (feather > 0.35) {
-        r = r * 0.65 + origR * 0.35 * (1 - feather);
-        g = g * 0.65 + origG * 0.35 * (1 - feather);
-        b = b * 0.65 + origB * 0.35 * (1 - feather);
-      }
 
       data[pi] = clampChannel(r);
       data[pi + 1] = clampChannel(g);
@@ -226,12 +279,12 @@ export function stabilizeGeminiRemovalToBackground(
   const { size, alpha } = template;
   const { x: ox, y: oy } = match;
   const fallbackBg = estimateBackgroundRgb(originalSource.data, width, match, template);
-  const dilated = dilateAlphaMap(alpha, size, 2);
+  const dilated = dilateAlphaMap(alpha, size, 3);
 
   for (let ty = 0; ty < size; ty++) {
     for (let tx = 0; tx < size; tx++) {
       const matte = alpha[ty * size + tx];
-      if (matte < 0.025) continue;
+      if (matte < 0.018) continue;
 
       const px = ox + tx;
       const py = oy + ty;
@@ -253,16 +306,17 @@ export function stabilizeGeminiRemovalToBackground(
       let r = data[pi];
       let g = data[pi + 1];
       let b = data[pi + 2];
-      const tol = 12 + matte * 18;
+      const tol = 10 + matte * 16;
+      const pull = matte < 0.08 ? 0.45 : 0.25;
 
       if (brightWatermark) {
-        if (r < bgR - tol) r = bgR - tol + (r - (bgR - tol)) * 0.25;
-        if (g < bgG - tol) g = bgG - tol + (g - (bgG - tol)) * 0.25;
-        if (b < bgB - tol) b = bgB - tol + (b - (bgB - tol)) * 0.25;
+        if (r < bgR - tol) r = bgR - tol + (r - (bgR - tol)) * pull;
+        if (g < bgG - tol) g = bgG - tol + (g - (bgG - tol)) * pull;
+        if (b < bgB - tol) b = bgB - tol + (b - (bgB - tol)) * pull;
       } else {
-        if (r > bgR + tol) r = bgR + tol + (r - (bgR + tol)) * 0.25;
-        if (g > bgG + tol) g = bgG + tol + (g - (bgG + tol)) * 0.25;
-        if (b > bgB + tol) b = bgB + tol + (b - (bgB + tol)) * 0.25;
+        if (r > bgR + tol) r = bgR + tol + (r - (bgR + tol)) * pull;
+        if (g > bgG + tol) g = bgG + tol + (g - (bgG + tol)) * pull;
+        if (b > bgB + tol) b = bgB + tol + (b - (bgB + tol)) * pull;
       }
 
       data[pi] = clampChannel(r);
