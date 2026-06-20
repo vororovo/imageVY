@@ -183,7 +183,7 @@ export function ImageRegionSelector({
   }, [onScrollPositionChange]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 2) {
+    if (e.button === 1) {
       e.preventDefault();
       const container = containerRef.current;
       if (!container) return;
@@ -308,7 +308,9 @@ export function ImageRegionSelector({
         className="relative min-h-64 min-w-0 flex-1 overflow-auto rounded-lg border border-[var(--color-border)]/50 bg-black/20"
         style={{ maxHeight }}
         onScroll={handleContainerScroll}
-        onContextMenu={(e) => e.preventDefault()}
+        onAuxClick={(e) => {
+          if (e.button === 1) e.preventDefault();
+        }}
       >
         <div className="flex min-h-64 min-w-full justify-center p-4">
           <div
@@ -344,7 +346,7 @@ export function ImageRegionSelector({
             dragging || panning ? "opacity-0" : "opacity-100"
           }`}
         >
-          드래그로 영역 선택 · 우클릭 드래그로 이동 · 스크롤로 이동
+          드래그로 영역 선택 · 휠 클릭 드래그로 이동 · 스크롤로 이동
         </p>
       </div>
     </div>
