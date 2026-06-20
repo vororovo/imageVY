@@ -11,10 +11,9 @@ import {
 } from "@/lib/image/ncc-match";
 import type { Region } from "@/lib/image/region";
 import { clampRegion, padRegionAroundMatch, regionFromMatch } from "@/lib/image/region";
-import { detectWatermarkInSelection } from "@/lib/image/watermark-detector";
+import { detectWatermarkInSelection, measureSuppressionGain } from "@/lib/image/watermark-detector";
 import {
   computeRegionGradientCorrelation,
-  computeRegionSpatialCorrelation,
   warpAlphaMap,
 } from "@/lib/image/alpha-map-utils";
 import {
@@ -39,19 +38,18 @@ export type GeminiNccCache = {
 };
 
 const ALPHA_NOISE_FLOOR = 3 / 255;
-const ALPHA_THRESHOLD = 0.0008;
-const FRINGE_ALPHA_MIN = 0.0006;
-const MAX_ALPHA = 0.99;
+const ALPHA_THRESHOLD = 0.0015;
+const MAX_ALPHA = 0.98;
 
-const ALPHA_GAIN_CANDIDATES = [
-  1, 1.08, 1.12, 1.2, 1.28, 1.36, 1.45, 1.52, 1.6, 1.7, 1.85, 2.0, 2.2,
-];
-const OUTLINE_GRADIENT_THRESHOLD = 0.38;
-const OUTLINE_SPATIAL_MAX = 0.32;
-const NEAR_BLACK_THRESHOLD = 8;
-const MAX_NEAR_BLACK_RATIO_INCREASE = 0.06;
+/** 과도한 gain은 어두운 별 잔상(과보정)을 만듭니다 */
+const ALPHA_GAIN_CANDIDATES = [1, 1.04, 1.08, 1.12, 1.16, 1.2, 1.24, 1.28, 1.32];
+const MIN_SUPPRESSION_IMPROVEMENT = 0.025;
+const MAX_DARK_ARTIFACT_RATIO = 0.04;
+const OUTLINE_GRADIENT_THRESHOLD = 0.42;
+const MIN_SUPPRESSION_FOR_REFINE = 0.06;
 const SUBPIXEL_SHIFTS = [-0.25, 0, 0.25] as const;
 const SUBPIXEL_SCALES = [0.99, 1, 1.01] as const;
+const REFINE_GAIN_CANDIDATES = [1, 1.04, 1.08, 1.12, 1.16];
 
 function clampChannel(value: number): number {
   return Math.max(0, Math.min(255, Math.round(value)));
@@ -120,16 +118,12 @@ export function applyGeminiTemplateInverseAlpha(
     for (let col = 0; col < size; col++) {
       const matteAlpha = matte[ty * size + col];
       const alphaMagnitude = Math.abs(matteAlpha);
-      let signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
-
-      if (signalAlpha < ALPHA_THRESHOLD) {
-        if (alphaMagnitude < FRINGE_ALPHA_MIN) continue;
-        signalAlpha = alphaMagnitude * alphaGain * 0.85;
-      }
+      const signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
+      if (signalAlpha < ALPHA_THRESHOLD) continue;
 
       const alpha = Math.min(alphaMagnitude * alphaGain, MAX_ALPHA);
       const oneMinusAlpha = 1 - alpha;
-      if (oneMinusAlpha < 0.01) continue;
+      if (oneMinusAlpha < 0.02) continue;
 
       const px = originX + col;
       const py = originY + ty;
@@ -141,9 +135,25 @@ export function applyGeminiTemplateInverseAlpha(
           ? [0, 0, 0]
           : [logoR, logoG, logoB];
 
-      data[pi] = clampChannel((data[pi] - alpha * logo[0]) / oneMinusAlpha);
-      data[pi + 1] = clampChannel((data[pi + 1] - alpha * logo[1]) / oneMinusAlpha);
-      data[pi + 2] = clampChannel((data[pi + 2] - alpha * logo[2]) / oneMinusAlpha);
+      let r = (data[pi] - alpha * logo[0]) / oneMinusAlpha;
+      let g = (data[pi + 1] - alpha * logo[1]) / oneMinusAlpha;
+      let b = (data[pi + 2] - alpha * logo[2]) / oneMinusAlpha;
+
+      if (brightWatermark) {
+        const maxDrop = 35 + alpha * 40;
+        r = Math.max(r, data[pi] - maxDrop);
+        g = Math.max(g, data[pi + 1] - maxDrop);
+        b = Math.max(b, data[pi + 2] - maxDrop);
+      } else {
+        const maxRise = 35 + alpha * 40;
+        r = Math.min(r, data[pi] + maxRise);
+        g = Math.min(g, data[pi + 1] + maxRise);
+        b = Math.min(b, data[pi + 2] + maxRise);
+      }
+
+      data[pi] = clampChannel(r);
+      data[pi + 1] = clampChannel(g);
+      data[pi + 2] = clampChannel(b);
     }
   }
 }
@@ -156,45 +166,115 @@ function cloneImageData(source: ImageData): ImageData {
   );
 }
 
-function calculateNearBlackRatio(
+function estimateBackgroundLuminance(
   data: Uint8ClampedArray,
   width: number,
   match: WatermarkMatchResult,
-  size: number,
+  template: SparkleTemplate,
 ): number {
+  const { size, alpha } = template;
   const { x, y } = match;
-  let nearBlack = 0;
-  let total = 0;
+  let sum = 0;
+  let count = 0;
   for (let ty = 0; ty < size; ty++) {
     for (let tx = 0; tx < size; tx++) {
+      if (alpha[ty * size + tx] >= 0.04) continue;
       const pi = ((y + ty) * width + (x + tx)) * 4;
-      total++;
-      if (
-        data[pi] <= NEAR_BLACK_THRESHOLD &&
-        data[pi + 1] <= NEAR_BLACK_THRESHOLD &&
-        data[pi + 2] <= NEAR_BLACK_THRESHOLD
-      ) {
-        nearBlack++;
+      sum += luminance(data[pi], data[pi + 1], data[pi + 2]);
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : 128;
+}
+
+function calculateDarkArtifactRatio(
+  source: Uint8ClampedArray,
+  result: Uint8ClampedArray,
+  width: number,
+  match: WatermarkMatchResult,
+  template: SparkleTemplate,
+  brightWatermark: boolean,
+): number {
+  const { size, alpha } = template;
+  const { x, y } = match;
+  const bgLum = estimateBackgroundLuminance(source, width, match, template);
+  let bad = 0;
+  let wmPixels = 0;
+
+  for (let ty = 0; ty < size; ty++) {
+    for (let tx = 0; tx < size; tx++) {
+      const matte = alpha[ty * size + tx];
+      if (matte < 0.08) continue;
+      wmPixels++;
+      const pi = ((y + ty) * width + (x + tx)) * 4;
+      const resultLum = luminance(result[pi], result[pi + 1], result[pi + 2]);
+      const sourceLum = luminance(source[pi], source[pi + 1], source[pi + 2]);
+      if (brightWatermark) {
+        if (resultLum < bgLum - 14 || resultLum < sourceLum - 28) bad++;
+      } else if (resultLum > bgLum + 14 || resultLum > sourceLum + 28) {
+        bad++;
       }
     }
   }
-  return total > 0 ? nearBlack / total : 0;
+
+  return wmPixels > 0 ? bad / wmPixels : 0;
 }
 
-function scoreRemovalQuality(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  alphaMap: Float32Array,
-  region: { x: number; y: number; size: number },
-): { spatial: number; gradient: number; cost: number } {
-  const spatial = computeRegionSpatialCorrelation(data, width, height, alphaMap, region);
-  const gradient = computeRegionGradientCorrelation(data, width, height, alphaMap, region);
+type RemovalEvaluation = {
+  image: ImageData;
+  suppression: number;
+  darkArtifactRatio: number;
+  gain: number;
+};
+
+function evaluateRemoval(
+  source: ImageData,
+  match: WatermarkMatchResult,
+  template: SparkleTemplate,
+  options: GeminiNccOptions,
+  brightWatermark: boolean,
+  gain: number,
+): RemovalEvaluation {
+  const image = applyRemovalWithGain(source, match, template, options, brightWatermark, gain);
   return {
-    spatial,
-    gradient,
-    cost: Math.abs(spatial) * 0.65 + Math.max(0, gradient) * 0.35,
+    image,
+    suppression: measureSuppressionGain(
+      image.data,
+      source.width,
+      source.height,
+      match.x,
+      match.y,
+      template.size,
+      template.alpha,
+      brightWatermark,
+    ),
+    darkArtifactRatio: calculateDarkArtifactRatio(
+      source.data,
+      image.data,
+      source.width,
+      match,
+      template,
+      brightWatermark,
+    ),
+    gain,
   };
+}
+
+function isAcceptableRemoval(evaluation: RemovalEvaluation): boolean {
+  return evaluation.darkArtifactRatio <= MAX_DARK_ARTIFACT_RATIO;
+}
+
+function isBetterRemoval(candidate: RemovalEvaluation, best: RemovalEvaluation): boolean {
+  if (!isAcceptableRemoval(candidate)) return false;
+  if (!isAcceptableRemoval(best)) return true;
+  if (candidate.suppression >= best.suppression + MIN_SUPPRESSION_IMPROVEMENT) return true;
+  if (
+    best.suppression - candidate.suppression <= 0.01 &&
+    candidate.darkArtifactRatio < best.darkArtifactRatio - 0.008
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function applyRemovalWithGain(
@@ -222,50 +302,22 @@ function pickBestAlphaGainRemoval(
   template: SparkleTemplate,
   options: GeminiNccOptions,
   brightWatermark: boolean,
-): ImageData {
-  const region = { x: match.x, y: match.y, size: template.size };
-  const originalNearBlack = calculateNearBlackRatio(
-    source.data,
-    source.width,
-    match,
-    template.size,
-  );
-  const maxNearBlack = Math.min(1, originalNearBlack + MAX_NEAR_BLACK_RATIO_INCREASE);
+): RemovalEvaluation {
+  let best = evaluateRemoval(source, match, template, options, brightWatermark, 1);
 
-  let bestImage = applyRemovalWithGain(source, match, template, options, brightWatermark, 1);
-  let bestCost = scoreRemovalQuality(
-    bestImage.data,
-    source.width,
-    source.height,
-    template.alpha,
-    region,
-  ).cost;
+  if (best.suppression >= 0.08 && isAcceptableRemoval(best)) {
+    return best;
+  }
 
   for (const gain of ALPHA_GAIN_CANDIDATES) {
-    if (gain === 1) continue;
-    const candidate = applyRemovalWithGain(source, match, template, options, brightWatermark, gain);
-    const nearBlack = calculateNearBlackRatio(
-      candidate.data,
-      source.width,
-      match,
-      template.size,
-    );
-    if (nearBlack > maxNearBlack) continue;
-
-    const scores = scoreRemovalQuality(
-      candidate.data,
-      source.width,
-      source.height,
-      template.alpha,
-      region,
-    );
-    if (scores.cost < bestCost) {
-      bestCost = scores.cost;
-      bestImage = candidate;
+    if (gain <= 1) continue;
+    const candidate = evaluateRemoval(source, match, template, options, brightWatermark, gain);
+    if (isBetterRemoval(candidate, best)) {
+      best = candidate;
     }
   }
 
-  return bestImage;
+  return best;
 }
 
 function refineOutlineResidual(
@@ -274,11 +326,11 @@ function refineOutlineResidual(
   template: SparkleTemplate,
   options: GeminiNccOptions,
   brightWatermark: boolean,
-  baseline: ImageData,
-): ImageData {
+  baseline: RemovalEvaluation,
+): RemovalEvaluation {
   const region = { x: match.x, y: match.y, size: template.size };
-  const baselineScores = scoreRemovalQuality(
-    baseline.data,
+  const baselineGradient = computeRegionGradientCorrelation(
+    baseline.image.data,
     source.width,
     source.height,
     template.alpha,
@@ -286,23 +338,14 @@ function refineOutlineResidual(
   );
 
   if (
-    Math.abs(baselineScores.spatial) > OUTLINE_SPATIAL_MAX ||
-    baselineScores.gradient < OUTLINE_GRADIENT_THRESHOLD
+    baseline.suppression >= MIN_SUPPRESSION_FOR_REFINE ||
+    baselineGradient < OUTLINE_GRADIENT_THRESHOLD ||
+    !isAcceptableRemoval(baseline)
   ) {
     return baseline;
   }
 
-  const originalNearBlack = calculateNearBlackRatio(
-    source.data,
-    source.width,
-    match,
-    template.size,
-  );
-  const maxNearBlack = Math.min(1, originalNearBlack + MAX_NEAR_BLACK_RATIO_INCREASE);
-  const gainCandidates = [1.12, 1.2, 1.28, 1.36, 1.45, 1.52, 1.6, 1.85, 2.0];
-
   let best = baseline;
-  let bestCost = baselineScores.cost;
 
   for (const scale of SUBPIXEL_SCALES) {
     for (const dy of SUBPIXEL_SHIFTS) {
@@ -311,8 +354,8 @@ function refineOutlineResidual(
         const warped = warpAlphaMap(template.alpha, template.size, { dx, dy, scale });
         const warpedTemplate: SparkleTemplate = { size: template.size, alpha: warped };
 
-        for (const gain of gainCandidates) {
-          const candidate = applyRemovalWithGain(
+        for (const gain of REFINE_GAIN_CANDIDATES) {
+          const candidate = evaluateRemoval(
             source,
             match,
             warpedTemplate,
@@ -320,28 +363,7 @@ function refineOutlineResidual(
             brightWatermark,
             gain,
           );
-          const nearBlack = calculateNearBlackRatio(
-            candidate.data,
-            source.width,
-            match,
-            template.size,
-          );
-          if (nearBlack > maxNearBlack) continue;
-
-          const scores = scoreRemovalQuality(
-            candidate.data,
-            source.width,
-            source.height,
-            warped,
-            region,
-          );
-          const improvedGradient = scores.gradient <= baselineScores.gradient - 0.03;
-          const keptSpatial =
-            Math.abs(scores.spatial) <= Math.abs(baselineScores.spatial) + 0.1;
-          if (!improvedGradient || !keptSpatial) continue;
-
-          if (scores.cost < bestCost) {
-            bestCost = scores.cost;
+          if (isBetterRemoval(candidate, best)) {
             best = candidate;
           }
         }
@@ -363,7 +385,7 @@ function applyRefinedGeminiRemoval(
   let result = pickBestAlphaGainRemoval(source, match, template, options, brightWatermark);
   result = refineOutlineResidual(source, match, template, options, brightWatermark, result);
 
-  imageData.data.set(result.data);
+  imageData.data.set(result.image.data);
 }
 
 export function buildGeminiCache(

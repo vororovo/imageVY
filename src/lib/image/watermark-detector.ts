@@ -65,7 +65,7 @@ function getAlphaMapAtSize(alphaMapKey: string, size: number): Float32Array | nu
   return interpolateAlphaMap(embedded, sourceSize, size);
 }
 
-function measureSuppressionGain(
+export function measureSuppressionGain(
   data: Uint8ClampedArray,
   width: number,
   height: number,
@@ -73,6 +73,7 @@ function measureSuppressionGain(
   y: number,
   size: number,
   alphaMap: Float32Array,
+  brightWatermark?: boolean,
 ): number {
   const region = { x, y, size };
   const before = Math.abs(
@@ -97,7 +98,9 @@ function measureSuppressionGain(
       }
     }
   }
-  const bright = wmCount === 0 || bgCount === 0 || wmSum / wmCount > bgSum / bgCount;
+  const bright =
+    brightWatermark ??
+    (wmCount === 0 || bgCount === 0 || wmSum / wmCount > bgSum / bgCount);
 
   const restored = new Float32Array(size * size);
   for (let ty = 0; ty < size; ty++) {
