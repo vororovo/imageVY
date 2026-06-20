@@ -1,5 +1,5 @@
 /** 앱 버전 (표시 형식: XX.XX.XX) */
-export const APP_VERSION = "00.51.00";
+export const APP_VERSION = "00.51.04";
 
 export type VersionParts = {
   major: number;
@@ -22,10 +22,10 @@ export function bumpPatchVersion(version: string): string {
   return formatVersion({ ...parts, patch: parts.patch + 1 });
 }
 
-/** 기능추가 → 마이너 +0.01.00, 패치 초기화 (예: 00.50.01 → 00.51.00) */
+/** 기능추가 → 마이너 +0.01.00, 패치 유지 (예: 00.50.04 → 00.51.04) */
 export function bumpMinorVersion(version: string): string {
   const parts = parseVersion(version);
-  return formatVersion({ major: parts.major, minor: parts.minor + 1, patch: 0 });
+  return formatVersion({ major: parts.major, minor: parts.minor + 1, patch: parts.patch });
 }
 
 export function formatAppVersionLabel(version: string = APP_VERSION): string {
