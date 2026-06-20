@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ArrowRight, FileText, ImageIcon, Shield } from "lucide-react";
+import { AppVersion } from "@/components/layout/AppVersion";
 
 const tools = [
   {
@@ -24,7 +25,8 @@ const tools = [
 
 export default function DashboardPage() {
   return (
-    <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
+    <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-6xl flex-col px-4 py-12 sm:px-6 sm:py-16">
+      <div className="flex-1">
       <section className="mb-12 text-center sm:mb-16">
         <p className="mb-3 text-sm font-medium tracking-widest text-indigo-400 uppercase">
           Client-side Media Editor
@@ -83,6 +85,9 @@ export default function DashboardPage() {
           </div>
         </div>
       </section>
+      </div>
+
+      <AppVersion className="pb-2 pt-8" />
     </div>
   );
 }
