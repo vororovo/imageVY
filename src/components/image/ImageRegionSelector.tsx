@@ -7,10 +7,15 @@ import {
   CROSSHAIR_CURSOR,
   IMAGE_FULLSCREEN_LABEL,
 } from "@/components/image/image-viewer-ui";
-import { ImageZoomControls, DEFAULT_ZOOM_PERCENT, zoomPercentToScale } from "@/components/ui/ImageZoomControls";
+import {
+  ImageZoomControls,
+  DEFAULT_ZOOM_PERCENT,
+  zoomPercentToScale,
+} from "@/components/ui/ImageZoomControls";
 import { getObjectContainLayout } from "@/lib/image/display-layout";
 import type { Region } from "@/lib/image/region";
 import { clampRegion } from "@/lib/image/region";
+import type { ViewerScroll } from "@/lib/image/viewer-scroll";
 
 export type { Region };
 
@@ -23,6 +28,8 @@ type ImageRegionSelectorProps = {
   className?: string;
   zoomPercent?: number;
   onZoomPercentChange?: (percent: number) => void;
+  scrollPosition?: ViewerScroll;
+  onScrollPositionChange?: (scroll: ViewerScroll) => void;
   expanded?: boolean;
   onExpand?: () => void;
   showToolbar?: boolean;
@@ -58,6 +65,8 @@ export function ImageRegionSelector({
   className = "",
   zoomPercent: zoomPercentProp = DEFAULT_ZOOM_PERCENT,
   onZoomPercentChange,
+  scrollPosition,
+  onScrollPositionChange,
   expanded = false,
   onExpand,
   showToolbar = true,
@@ -66,11 +75,14 @@ export function ImageRegionSelector({
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const [dragging, setDragging] = useState(false);
+  const [panning, setPanning] = useState(false);
   const [internalZoomPercent, setInternalZoomPercent] = useState(DEFAULT_ZOOM_PERCENT);
   const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(
     null,
   );
   const dragStart = useRef({ x: 0, y: 0 });
+  const panStart = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+  const skipScrollEmitRef = useRef(false);
 
   const zoomPercent = zoomPercentProp ?? internalZoomPercent;
   const setZoomPercent = onZoomPercentChange ?? setInternalZoomPercent;
@@ -107,6 +119,16 @@ export function ImageRegionSelector({
     ro.observe(el);
     return () => ro.disconnect();
   }, [measureContainer]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !scrollPosition) return;
+    if (el.scrollLeft === scrollPosition.left && el.scrollTop === scrollPosition.top) return;
+
+    skipScrollEmitRef.current = true;
+    el.scrollLeft = scrollPosition.left;
+    el.scrollTop = scrollPosition.top;
+  }, [scrollPosition?.left, scrollPosition?.top]);
 
   const layoutWidth = Math.max((containerSize?.width ?? 320) - 32, 1);
   const layoutHeight = Math.max((containerSize?.height ?? 256) - 32, 1);
@@ -150,7 +172,31 @@ export function ImageRegionSelector({
     [naturalWidth, naturalHeight],
   );
 
+  const handleContainerScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el || !onScrollPositionChange) return;
+    if (skipScrollEmitRef.current) {
+      skipScrollEmitRef.current = false;
+      return;
+    }
+    onScrollPositionChange({ left: el.scrollLeft, top: el.scrollTop });
+  }, [onScrollPositionChange]);
+
   const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 2) {
+      e.preventDefault();
+      const container = containerRef.current;
+      if (!container) return;
+      panStart.current = {
+        x: e.clientX,
+        y: e.clientY,
+        scrollLeft: container.scrollLeft,
+        scrollTop: container.scrollTop,
+      };
+      setPanning(true);
+      return;
+    }
+
     if (e.button !== 0) return;
     const point = toNaturalPoint(e.clientX, e.clientY);
     if (!point) return;
@@ -210,6 +256,31 @@ export function ImageRegionSelector({
     };
   }, [dragging, naturalWidth, naturalHeight, onRegionChange, toNaturalPoint]);
 
+  useEffect(() => {
+    if (!panning) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const dx = e.clientX - panStart.current.x;
+      const dy = e.clientY - panStart.current.y;
+      container.scrollLeft = panStart.current.scrollLeft - dx;
+      container.scrollTop = panStart.current.scrollTop - dy;
+      handleContainerScroll();
+    };
+
+    const handleMouseUp = () => setPanning(false);
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [panning, handleContainerScroll]);
+
+  const surfaceCursor = panning ? "grabbing" : dragging ? "crosshair" : CROSSHAIR_CURSOR;
+
   return (
     <div className={`flex h-full min-h-0 flex-col ${className}`}>
       {showToolbar && (
@@ -236,6 +307,8 @@ export function ImageRegionSelector({
         ref={containerRef}
         className="relative min-h-64 min-w-0 flex-1 overflow-auto rounded-lg border border-[var(--color-border)]/50 bg-black/20"
         style={{ maxHeight }}
+        onScroll={handleContainerScroll}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <div className="flex min-h-64 min-w-full justify-center p-4">
           <div
@@ -243,7 +316,7 @@ export function ImageRegionSelector({
             style={{
               width: displayWidth,
               height: displayHeight,
-              cursor: CROSSHAIR_CURSOR,
+              cursor: surfaceCursor,
             }}
             onMouseDown={handleMouseDown}
           >
@@ -268,10 +341,10 @@ export function ImageRegionSelector({
 
         <p
           className={`pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-md bg-black/60 px-2 py-1 text-xs text-white/80 transition-opacity ${
-            dragging ? "opacity-0" : "opacity-100"
+            dragging || panning ? "opacity-0" : "opacity-100"
           }`}
         >
-          드래그하여 워터마크 영역 선택 · 스크롤로 이동
+          드래그로 영역 선택 · 우클릭 드래그로 이동 · 스크롤로 이동
         </p>
       </div>
     </div>

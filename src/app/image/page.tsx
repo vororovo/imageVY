@@ -15,6 +15,7 @@ import {
   clampRegion,
   type Region,
 } from "@/lib/image/region";
+import { INITIAL_VIEWER_SCROLL, type ViewerScroll } from "@/lib/image/viewer-scroll";
 import { ImageRegionSelector } from "@/components/image/ImageRegionSelector";
 import { WatermarkPreviewCanvas } from "@/components/image/WatermarkPreviewCanvas";
 import { ImageLightbox } from "@/components/ui/ImageLightbox";
@@ -80,8 +81,8 @@ export default function ImageEditorPage() {
   const [geminiCache, setGeminiCache] = useState<GeminiNccCache | null>(null);
   const [maskLightboxOpen, setMaskLightboxOpen] = useState(false);
   const [previewLightboxOpen, setPreviewLightboxOpen] = useState(false);
-  const [maskZoomPercent, setMaskZoomPercent] = useState(DEFAULT_ZOOM_PERCENT);
-  const [previewZoomPercent, setPreviewZoomPercent] = useState(DEFAULT_ZOOM_PERCENT);
+  const [watermarkZoomPercent, setWatermarkZoomPercent] = useState(DEFAULT_ZOOM_PERCENT);
+  const [watermarkScroll, setWatermarkScroll] = useState<ViewerScroll>(INITIAL_VIEWER_SCROLL);
   const watermarkCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -165,9 +166,15 @@ export default function ImageEditorPage() {
 
   useEffect(() => {
     if (!source) return;
-    setMaskZoomPercent(DEFAULT_ZOOM_PERCENT);
-    setPreviewZoomPercent(DEFAULT_ZOOM_PERCENT);
+    setWatermarkZoomPercent(DEFAULT_ZOOM_PERCENT);
+    setWatermarkScroll(INITIAL_VIEWER_SCROLL);
   }, [source?.objectUrl]);
+
+  const handleWatermarkScroll = useCallback((scroll: ViewerScroll) => {
+    setWatermarkScroll((prev) =>
+      prev.left === scroll.left && prev.top === scroll.top ? prev : scroll,
+    );
+  }, []);
 
   const handleDetectedRegion = useCallback((detected: Region) => {
     setRegion((prev) =>
@@ -254,8 +261,8 @@ export default function ImageEditorPage() {
       setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
       setWidth(img.naturalWidth);
       setHeight(img.naturalHeight);
-      setMaskZoomPercent(DEFAULT_ZOOM_PERCENT);
-      setPreviewZoomPercent(DEFAULT_ZOOM_PERCENT);
+      setWatermarkZoomPercent(DEFAULT_ZOOM_PERCENT);
+      setWatermarkScroll(INITIAL_VIEWER_SCROLL);
 
       if (autoApplyGeminiPreset) {
         applyGeminiPresetToImage(img, clientFile.objectUrl);
@@ -436,8 +443,10 @@ export default function ImageEditorPage() {
                         naturalHeight={naturalSize.height}
                         region={region}
                         onRegionChange={handleRegionChange}
-                        zoomPercent={maskZoomPercent}
-                        onZoomPercentChange={setMaskZoomPercent}
+                        zoomPercent={watermarkZoomPercent}
+                        onZoomPercentChange={setWatermarkZoomPercent}
+                        scrollPosition={watermarkScroll}
+                        onScrollPositionChange={handleWatermarkScroll}
                         onExpand={() => setMaskLightboxOpen(true)}
                       />
                     </div>
@@ -475,8 +484,10 @@ export default function ImageEditorPage() {
                         onGeminiDetected={handleGeminiDetected}
                         onGeminiCacheReady={setGeminiCache}
                         onCanvasRef={handleWatermarkCanvasRef}
-                        zoomPercent={previewZoomPercent}
-                        onZoomPercentChange={setPreviewZoomPercent}
+                        zoomPercent={watermarkZoomPercent}
+                        onZoomPercentChange={setWatermarkZoomPercent}
+                        scrollPosition={watermarkScroll}
+                        onScrollPositionChange={handleWatermarkScroll}
                         onExpand={() => setPreviewLightboxOpen(true)}
                       />
                     </div>
@@ -927,8 +938,8 @@ export default function ImageEditorPage() {
             title="마스크 영역 선택"
             toolbar={
               <ImageZoomControls
-                zoomPercent={maskZoomPercent}
-                onZoomPercentChange={setMaskZoomPercent}
+                zoomPercent={watermarkZoomPercent}
+                onZoomPercentChange={setWatermarkZoomPercent}
                 compact
               />
             }
@@ -939,8 +950,10 @@ export default function ImageEditorPage() {
               naturalHeight={naturalSize.height}
               region={region}
               onRegionChange={handleRegionChange}
-              zoomPercent={maskZoomPercent}
-              onZoomPercentChange={setMaskZoomPercent}
+              zoomPercent={watermarkZoomPercent}
+              onZoomPercentChange={setWatermarkZoomPercent}
+              scrollPosition={watermarkScroll}
+              onScrollPositionChange={handleWatermarkScroll}
               expanded
               showToolbar={false}
               viewportMaxHeight="100%"
@@ -953,8 +966,8 @@ export default function ImageEditorPage() {
             title="실시간 미리보기"
             toolbar={
               <ImageZoomControls
-                zoomPercent={previewZoomPercent}
-                onZoomPercentChange={setPreviewZoomPercent}
+                zoomPercent={watermarkZoomPercent}
+                onZoomPercentChange={setWatermarkZoomPercent}
                 compact
               />
             }
@@ -973,8 +986,10 @@ export default function ImageEditorPage() {
               geminiOptimized={geminiPresetActive}
               geminiManualMode={geminiManualActive}
               geminiCache={geminiCache}
-              zoomPercent={previewZoomPercent}
-              onZoomPercentChange={setPreviewZoomPercent}
+              zoomPercent={watermarkZoomPercent}
+              onZoomPercentChange={setWatermarkZoomPercent}
+              scrollPosition={watermarkScroll}
+              onScrollPositionChange={handleWatermarkScroll}
               expanded
               showToolbar={false}
               viewportMaxHeight="100%"

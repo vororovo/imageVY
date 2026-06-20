@@ -21,3 +21,34 @@ export function clampRegion(
     height: Math.round(Math.max(1, Math.abs(y2 - y1))),
   };
 }
+
+/** 탐지된 워터마크 주변에 UI용 여유 패딩을 더합니다. */
+export function padRegionAroundMatch(
+  match: Region,
+  imageWidth: number,
+  imageHeight: number,
+  padding?: number,
+): Region {
+  const base = Math.min(match.width, match.height);
+  const pad = padding ?? Math.max(16, Math.round(base * 0.3));
+  return clampRegion(
+    {
+      x: match.x - pad,
+      y: match.y - pad,
+      width: match.width + pad * 2,
+      height: match.height + pad * 2,
+    },
+    imageWidth,
+    imageHeight,
+  );
+}
+
+export function regionFromMatch(
+  x: number,
+  y: number,
+  size: number,
+  imageWidth: number,
+  imageHeight: number,
+): Region {
+  return clampRegion({ x, y, width: size, height: size }, imageWidth, imageHeight);
+}

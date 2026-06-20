@@ -6,7 +6,7 @@ import {
   resolveGeminiWatermarkSearchConfigs,
 } from "@/lib/image/gemini-size-catalog";
 import type { Region } from "@/lib/image/region";
-import { clampRegion } from "@/lib/image/region";
+import { clampRegion, padRegionAroundMatch, regionFromMatch } from "@/lib/image/region";
 
 export type { GeminiWatermarkConfig } from "@/lib/image/gemini-size-catalog";
 
@@ -54,11 +54,17 @@ export function getGeminiExpectedRegion(
   config?: GeminiWatermarkConfig,
 ): Region {
   const { x, y, spec } = getGeminiExpectedPosition(imageWidth, imageHeight, config);
-  return clampRegion(
-    { x, y, width: spec.logoSize, height: spec.logoSize },
-    imageWidth,
-    imageHeight,
-  );
+  return regionFromMatch(x, y, spec.logoSize, imageWidth, imageHeight);
+}
+
+/** 업로드 직후 UI에 표시할 여유 있는 초기 영역 */
+export function getGeminiFallbackRegion(
+  imageWidth: number,
+  imageHeight: number,
+  config?: GeminiWatermarkConfig,
+): Region {
+  const tight = getGeminiExpectedRegion(imageWidth, imageHeight, config);
+  return padRegionAroundMatch(tight, imageWidth, imageHeight);
 }
 
 export { getRefineSearchForConfig, resolveGeminiWatermarkSearchConfigs } from "@/lib/image/gemini-size-catalog";

@@ -13,16 +13,17 @@ import {
   buildGeminiCache,
   type GeminiNccCache,
 } from "@/lib/image/gemini-ncc-removal";
-
-function geminiCacheKeyMatches(cacheImageKey: string, imageKey: string): boolean {
-  return cacheImageKey === imageKey || cacheImageKey.startsWith(`${imageKey}#`);
-}
 import { hexToRgb } from "@/lib/image/inverse-alpha";
 import type { Region } from "@/lib/image/region";
+import type { ViewerScroll } from "@/lib/image/viewer-scroll";
 import {
   createProcessedWatermark,
   type WatermarkMethod,
 } from "@/lib/image/watermark-removal";
+
+function geminiCacheKeyMatches(cacheImageKey: string, imageKey: string): boolean {
+  return cacheImageKey === imageKey || cacheImageKey.startsWith(`${imageKey}#`);
+}
 
 type WatermarkPreviewCanvasProps = {
   imageUrl: string;
@@ -45,6 +46,8 @@ type WatermarkPreviewCanvasProps = {
   className?: string;
   zoomPercent?: number;
   onZoomPercentChange?: (percent: number) => void;
+  scrollPosition?: ViewerScroll;
+  onScrollPositionChange?: (scroll: ViewerScroll) => void;
   expanded?: boolean;
   onExpand?: () => void;
   showToolbar?: boolean;
@@ -72,6 +75,8 @@ export function WatermarkPreviewCanvas({
   className = "",
   zoomPercent: zoomPercentProp = DEFAULT_ZOOM_PERCENT,
   onZoomPercentChange,
+  scrollPosition,
+  onScrollPositionChange,
   expanded = false,
   onExpand,
   showToolbar = true,
@@ -83,6 +88,7 @@ export function WatermarkPreviewCanvas({
   const geminiCacheRef = useRef<GeminiNccCache | null>(null);
   const rafRef = useRef<number | null>(null);
   const imageKeyRef = useRef<string>("");
+  const skipScrollEmitRef = useRef(false);
   const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(
     null,
   );
@@ -125,6 +131,26 @@ export function WatermarkPreviewCanvas({
     ro.observe(el);
     return () => ro.disconnect();
   }, [measureContainer]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !scrollPosition) return;
+    if (el.scrollLeft === scrollPosition.left && el.scrollTop === scrollPosition.top) return;
+
+    skipScrollEmitRef.current = true;
+    el.scrollLeft = scrollPosition.left;
+    el.scrollTop = scrollPosition.top;
+  }, [scrollPosition?.left, scrollPosition?.top]);
+
+  const handleContainerScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el || !onScrollPositionChange) return;
+    if (skipScrollEmitRef.current) {
+      skipScrollEmitRef.current = false;
+      return;
+    }
+    onScrollPositionChange({ left: el.scrollLeft, top: el.scrollTop });
+  }, [onScrollPositionChange]);
 
   const layoutWidth = Math.max((containerSize?.width ?? 320) - 32, 1);
   const layoutHeight = Math.max((containerSize?.height ?? 256) - 32, 1);
@@ -313,6 +339,7 @@ export function WatermarkPreviewCanvas({
         ref={containerRef}
         className="relative min-h-64 min-w-0 flex-1 overflow-auto rounded-lg border border-[var(--color-border)]/50 bg-black/20"
         style={{ maxHeight }}
+        onScroll={handleContainerScroll}
       >
         <div className="flex min-h-64 min-w-full justify-center p-4">
           <div

@@ -10,7 +10,7 @@ import {
   type WatermarkMatchResult,
 } from "@/lib/image/ncc-match";
 import type { Region } from "@/lib/image/region";
-import { clampRegion } from "@/lib/image/region";
+import { clampRegion, padRegionAroundMatch, regionFromMatch } from "@/lib/image/region";
 import { detectWatermarkInSelection } from "@/lib/image/watermark-detector";
 import {
   getSparkleTemplateAtSize,
@@ -26,6 +26,7 @@ export type GeminiNccOptions = {
 export type GeminiNccCache = {
   match: WatermarkMatchResult;
   template: SparkleTemplate;
+  /** UI 표시용 — 탐지 위치보다 여유 있게 잡힌 영역 */
   region: Region;
   detected: boolean;
   imageKey: string;
@@ -139,16 +140,14 @@ export function buildGeminiCache(
   const detected = isWatermarkDetected(match);
   const brightWatermark = detectBrightWatermark(data, width, match, template);
 
-  const region = clampRegion(
-    {
-      x: match.x,
-      y: match.y,
-      width: match.templateSize,
-      height: match.templateSize,
-    },
+  const tightRegion = regionFromMatch(
+    match.x,
+    match.y,
+    match.templateSize,
     width,
     height,
   );
+  const region = padRegionAroundMatch(tightRegion, width, height);
 
   return { match, template, region, detected, imageKey, brightWatermark };
 }
@@ -195,11 +194,12 @@ export function buildGeminiManualCache(
   };
 
   const brightWatermark = detectBrightWatermark(data, width, alignedMatch, template);
+  const region = padRegionAroundMatch(clamped, width, height);
 
   return {
     match: alignedMatch,
     template,
-    region: clamped,
+    region,
     detected: true,
     imageKey: `${imageKey}#manual`,
     brightWatermark,

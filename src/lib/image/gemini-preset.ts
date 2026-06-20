@@ -1,4 +1,6 @@
-import { getGeminiExpectedRegion } from "@/lib/image/gemini-position";
+import {
+  getGeminiFallbackRegion as getPaddedGeminiFallbackRegion,
+} from "@/lib/image/gemini-position";
 import {
   buildGeminiCache,
   buildGeminiManualCache,
@@ -71,5 +73,5 @@ export function getGeminiFallbackRegion(
   imageWidth: number,
   imageHeight: number,
 ): Region {
-  return getGeminiExpectedRegion(imageWidth, imageHeight);
+  return getPaddedGeminiFallbackRegion(imageWidth, imageHeight);
 }
