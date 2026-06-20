@@ -524,6 +524,44 @@ function refineSelectionCandidate(
   return best;
 }
 
+/** suppressionGain 기준 ±3px 위치 미세 정렬 (알파 warp만으로는 보정 안 되는 정수 픽셀 오차) */
+function refineSelectionBySuppression(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  seed: DetectionCandidate,
+): DetectionCandidate {
+  let best = seed;
+  const radius = 3;
+
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const x = seed.x + dx;
+      const y = seed.y + dy;
+      if (x < 0 || y < 0 || x + seed.size > width || y + seed.size > height) continue;
+
+      const candidate = makeCandidate(
+        data,
+        width,
+        height,
+        x,
+        y,
+        seed.size,
+        seed.alphaMapKey,
+        seed.alphaMap,
+        seed.config,
+        "selection-suppression",
+      );
+      if (candidate.suppressionGain > best.suppressionGain + 0.003) {
+        best = candidate;
+      }
+    }
+  }
+
+  return best;
+}
+
 function refineTemplateWarp(
   data: Uint8ClampedArray,
   width: number,
@@ -676,7 +714,7 @@ export function detectWatermarkInSelection(
         alphaMap,
         results,
         expectedSize,
-        2,
+        1,
         "selection",
       );
     }
@@ -765,8 +803,16 @@ export function detectWatermarkInSelection(
 
   let refined = refineSelectionCandidate(data, width, height, best, expectedSize);
 
+  const selectionCenterX = selection.x + selection.width / 2;
+  const selectionCenterY = selection.y + selection.height / 2;
   const { x: catalogX, y: catalogY } = getWatermarkPositionFromConfig(width, height, config);
-  if (selectionContainsTemplate(selection, catalogX, catalogY, expectedSize)) {
+  const catalogNearSelection =
+    Math.hypot(
+      selectionCenterX - (catalogX + expectedSize / 2),
+      selectionCenterY - (catalogY + expectedSize / 2),
+    ) <= expectedSize * 1.25;
+
+  if (catalogNearSelection && selectionContainsTemplate(selection, catalogX, catalogY, expectedSize)) {
     const catalogAlpha = getAlphaMapAtSize(alphaMapKey, expectedSize);
     if (catalogAlpha) {
       const catalogCandidate = makeCandidate(
@@ -802,6 +848,8 @@ export function detectWatermarkInSelection(
   if (warped.suppressionGain > refined.suppressionGain + 0.025) {
     refined = warped;
   }
+
+  refined = refineSelectionBySuppression(data, width, height, refined);
 
   const match = candidateToMatch(refined);
   return { ...match, detectionSource: "manual" };
