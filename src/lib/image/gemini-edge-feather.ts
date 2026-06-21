@@ -306,10 +306,13 @@ export function stabilizeGeminiRemovalToBackground(
       let r = data[pi];
       let g = data[pi + 1];
       let b = data[pi + 2];
-      const tol = 10 + matte * 16;
-      const pull = matte < 0.08 ? 0.45 : 0.25;
+      const tol = 8 + matte * 14;
+      const pull = matte < 0.08 ? 0.55 : 0.35;
 
       if (brightWatermark) {
+        if (r > bgR + tol) r = bgR + tol + (r - (bgR + tol)) * pull;
+        if (g > bgG + tol) g = bgG + tol + (g - (bgG + tol)) * pull;
+        if (b > bgB + tol) b = bgB + tol + (b - (bgB + tol)) * pull;
         if (r < bgR - tol) r = bgR - tol + (r - (bgR - tol)) * pull;
         if (g < bgG - tol) g = bgG - tol + (g - (bgG - tol)) * pull;
         if (b < bgB - tol) b = bgB - tol + (b - (bgB - tol)) * pull;
@@ -322,6 +325,81 @@ export function stabilizeGeminiRemovalToBackground(
       data[pi] = clampChannel(r);
       data[pi + 1] = clampChannel(g);
       data[pi + 2] = clampChannel(b);
+    }
+  }
+}
+
+function pixelLuminance(r: number, g: number, b: number): number {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+/**
+ * 역블렌딩 후 남는 밝/어두 잔광(별 윤곽 등)을 배경 밝기에 맞춰 제거
+ */
+export function repairGeminiLuminanceResidual(
+  imageData: ImageData,
+  originalSource: ImageData,
+  match: WatermarkMatchResult,
+  template: SparkleTemplate,
+  brightWatermark: boolean,
+): void {
+  const { data, width, height } = imageData;
+  const { size, alpha } = template;
+  const { x: ox, y: oy } = match;
+  const fallbackBg = estimateBackgroundRgb(originalSource.data, width, match, template);
+  const dilated = dilateAlphaMap(alpha, size, 5);
+
+  for (let pass = 0; pass < 2; pass++) {
+    for (let ty = 0; ty < size; ty++) {
+      for (let tx = 0; tx < size; tx++) {
+        const idx = ty * size + tx;
+        const core = alpha[idx];
+        const dil = dilated[idx];
+        if (core < 0.006 && dil < 0.02) continue;
+
+        const px = ox + tx;
+        const py = oy + ty;
+        if (px < 0 || py < 0 || px >= width || py >= height) continue;
+
+        const pi = (py * width + px) * 4;
+        const [bgR, bgG, bgB] = sampleRingBackground(
+          originalSource.data,
+          width,
+          height,
+          px,
+          py,
+          match,
+          template,
+          dilated,
+          fallbackBg,
+        );
+
+        let r = data[pi];
+        let g = data[pi + 1];
+        let b = data[pi + 2];
+        const resultLum = pixelLuminance(r, g, b);
+        const bgLum = pixelLuminance(bgR, bgG, bgB);
+        const origLum = pixelLuminance(
+          originalSource.data[pi],
+          originalSource.data[pi + 1],
+          originalSource.data[pi + 2],
+        );
+
+        const fringe = core < 0.04 ? 1 : core < 0.12 ? 0.75 : 0.45;
+        const lumDiff = brightWatermark ? resultLum - bgLum : bgLum - resultLum;
+        const origDiff = brightWatermark ? origLum - bgLum : bgLum - origLum;
+
+        if (lumDiff <= 3.5 || origDiff <= 4) continue;
+
+        const strength = Math.min(0.92, fringe * (0.35 + lumDiff / 28));
+        r = r + (bgR - r) * strength;
+        g = g + (bgG - g) * strength;
+        b = b + (bgB - b) * strength;
+
+        data[pi] = clampChannel(r);
+        data[pi + 1] = clampChannel(g);
+        data[pi + 2] = clampChannel(b);
+      }
     }
   }
 }

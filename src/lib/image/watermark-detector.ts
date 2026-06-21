@@ -205,15 +205,27 @@ function pushTop(
 }
 
 /** 선택 영역 내 탐지 — NCC·역블렌딩 검증 우선, 카탈로그 크기 일치 보너스 */
-function rankSelectionCandidate(c: DetectionCandidate, expectedSize: number): number {
+function rankSelectionCandidate(
+  c: DetectionCandidate,
+  expectedSize: number,
+  selection?: Region,
+): number {
   const sizeBonus = Math.abs(c.size - expectedSize) <= 1 ? 1.15 : 1;
-  return (
+  let score =
     (c.suppressionGain * 3.5 +
       Math.max(0, c.spatialScore) * 2.5 +
       c.luminanceScore * 1.5 +
       c.confidence * 0.8) *
-    sizeBonus
-  );
+    sizeBonus;
+
+  if (selection) {
+    const cx = selection.x + selection.width / 2;
+    const cy = selection.y + selection.height / 2;
+    const dist = Math.hypot(c.x + c.size / 2 - cx, c.y + c.size / 2 - cy);
+    score += Math.max(0, 1 - dist / Math.max(expectedSize * 0.55, 24)) * 5;
+  }
+
+  return score;
 }
 
 function pushTopSelection(
@@ -221,10 +233,13 @@ function pushTopSelection(
   candidate: DetectionCandidate,
   expectedSize: number,
   limit = 16,
+  selection?: Region,
 ): void {
   list.push(candidate);
   list.sort(
-    (a, b) => rankSelectionCandidate(b, expectedSize) - rankSelectionCandidate(a, expectedSize),
+    (a, b) =>
+      rankSelectionCandidate(b, expectedSize, selection) -
+      rankSelectionCandidate(a, expectedSize, selection),
   );
   if (list.length > limit) list.length = limit;
 }
@@ -306,7 +321,7 @@ function searchSelectionAtSize(
         source,
       );
       if (candidate.suppressionGain < 0.015 && candidate.spatialScore < 0.08) continue;
-      pushTopSelection(results, candidate, expectedSize);
+      pushTopSelection(results, candidate, expectedSize, 16, selection);
     }
   }
 }
@@ -342,7 +357,7 @@ function searchNearCandidate(
         config,
         "selection-local",
       );
-      pushTopSelection(results, candidate, expectedSize);
+      pushTopSelection(results, candidate, expectedSize, 16, selection);
     }
   }
 }
@@ -379,7 +394,7 @@ function searchAroundAnchors(
           config,
           "selection-anchor",
         );
-        pushTopSelection(results, candidate, expectedSize);
+        pushTopSelection(results, candidate, expectedSize, 16, selection);
       }
     }
   }
@@ -658,6 +673,48 @@ function configKey(config: GeminiWatermarkConfig): string {
   return `${config.logoSize}:${config.marginRight}:${config.marginBottom}:${config.alphaVariant ?? ""}`;
 }
 
+/** NCC 최고점보다 사용자가 드래그한 영역 중심을 우선 (suppression 유사 시) */
+function preferSelectionCenterCandidate(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  selection: Region,
+  config: GeminiWatermarkConfig,
+  expectedSize: number,
+  alphaMapKey: string,
+  best: DetectionCandidate,
+): DetectionCandidate {
+  const alphaMap = getAlphaMapAtSize(alphaMapKey, expectedSize);
+  if (!alphaMap) return best;
+
+  const cx = Math.round(selection.x + (selection.width - expectedSize) / 2);
+  const cy = Math.round(selection.y + (selection.height - expectedSize) / 2);
+  if (!selectionContainsTemplate(selection, cx, cy, expectedSize)) return best;
+
+  const center = makeCandidate(
+    data,
+    width,
+    height,
+    cx,
+    cy,
+    expectedSize,
+    alphaMapKey,
+    alphaMap,
+    config,
+    "selection-center",
+  );
+
+  if (
+    center.suppressionGain >= best.suppressionGain * 0.88 ||
+    rankSelectionCandidate(center, expectedSize, selection) >=
+      rankSelectionCandidate(best, expectedSize, selection) * 0.95
+  ) {
+    return center;
+  }
+
+  return best;
+}
+
 /** 사용자가 지정한 ROI 안에서 ✦ 로고 위치·크기·알파 맵을 탐지 */
 export function detectWatermarkInSelection(
   data: Uint8ClampedArray,
@@ -674,6 +731,34 @@ export function detectWatermarkInSelection(
   const alphaMapKey = String(resolveAlphaMapKey(config));
   const maxFit = Math.min(selection.width, selection.height);
   const results: DetectionCandidate[] = [];
+
+  if (maxFit >= expectedSize * 0.55) {
+    const seedAlpha = getAlphaMapAtSize(alphaMapKey, expectedSize);
+    if (seedAlpha) {
+      const cx = Math.round(selection.x + (selection.width - expectedSize) / 2);
+      const cy = Math.round(selection.y + (selection.height - expectedSize) / 2);
+      if (selectionContainsTemplate(selection, cx, cy, expectedSize)) {
+        pushTopSelection(
+          results,
+          makeCandidate(
+            data,
+            width,
+            height,
+            cx,
+            cy,
+            expectedSize,
+            alphaMapKey,
+            seedAlpha,
+            config,
+            "selection-center-seed",
+          ),
+          expectedSize,
+          16,
+          selection,
+        );
+      }
+    }
+  }
 
   const primarySize = Math.min(expectedSize, maxFit);
   const primaryAlpha = getAlphaMapAtSize(alphaMapKey, primarySize);
@@ -742,6 +827,19 @@ export function detectWatermarkInSelection(
   }
 
   let best = results[0] ?? null;
+
+  if (best && maxFit >= expectedSize * 0.55) {
+    best = preferSelectionCenterCandidate(
+      data,
+      width,
+      height,
+      selection,
+      config,
+      expectedSize,
+      alphaMapKey,
+      best,
+    );
+  }
 
   if (best) {
     searchNearCandidate(

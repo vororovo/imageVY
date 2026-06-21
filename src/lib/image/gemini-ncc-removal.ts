@@ -22,6 +22,7 @@ import {
 } from "@/lib/image/sparkle-template";
 import {
   applyGeminiEdgeFeather,
+  repairGeminiLuminanceResidual,
   stabilizeGeminiRemovalToBackground,
   type GeminiEdgeFeatherOptions,
 } from "@/lib/image/gemini-edge-feather";
@@ -109,9 +110,76 @@ function detectBrightWatermark(
   return wmSum / wmCount > bgSum / bgCount;
 }
 
+function sampleLocalBackgroundRgb(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  px: number,
+  py: number,
+  originX: number,
+  originY: number,
+  templateSize: number,
+  templateAlpha: Float32Array,
+): [number, number, number] {
+  let rSum = 0;
+  let gSum = 0;
+  let bSum = 0;
+  let weightSum = 0;
+
+  for (let dy = -5; dy <= 5; dy++) {
+    for (let dx = -5; dx <= 5; dx++) {
+      const nx = px + dx;
+      const ny = py + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+
+      const tx = nx - originX;
+      const ty = ny - originY;
+      if (tx >= 0 && tx < templateSize && ty >= 0 && ty < templateSize) {
+        if (templateAlpha[ty * templateSize + tx] >= 0.035) continue;
+      }
+
+      const dist = Math.hypot(dx, dy);
+      if (dist > 5) continue;
+      const w = 1 / (1 + dist * 0.4);
+      const pi = (ny * width + nx) * 4;
+      rSum += data[pi] * w;
+      gSum += data[pi + 1] * w;
+      bSum += data[pi + 2] * w;
+      weightSum += w;
+    }
+  }
+
+  if (weightSum === 0) {
+    const pi = (py * width + px) * 4;
+    return [data[pi], data[pi + 1], data[pi + 2]];
+  }
+  return [rSum / weightSum, gSum / weightSum, bSum / weightSum];
+}
+
+/** 픽셀 밝기와 주변 배경으로 실제 블렌드 알파 추정 */
+function estimateLuminanceAlpha(
+  r: number,
+  g: number,
+  b: number,
+  bgR: number,
+  bgG: number,
+  bgB: number,
+  brightWatermark: boolean,
+): number {
+  const lum = luminance(r, g, b);
+  const bgLum = luminance(bgR, bgG, bgB);
+  if (brightWatermark) {
+    const span = Math.max(255 - bgLum, 14);
+    return Math.max(0, Math.min(0.98, (lum - bgLum) / span));
+  }
+  const span = Math.max(bgLum, 14);
+  return Math.max(0, Math.min(0.98, (bgLum - lum) / span));
+}
+
 /**
  * 역알파 블렌딩 (GargantuaX blendModes.js 기반)
  * original = (watermarked - α × logo) / (1 - α)
+ * 템플릿 알파 + 픽셀 밝기 추정 알파를 결합해 윤곽 잔광을 줄입니다.
  */
 export function applyGeminiTemplateInverseAlpha(
   imageData: ImageData,
@@ -136,18 +204,56 @@ export function applyGeminiTemplateInverseAlpha(
     for (let col = 0; col < size; col++) {
       const matteAlpha = matte[ty * size + col];
       const alphaMagnitude = Math.abs(matteAlpha);
-      const signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
-      if (signalAlpha < ALPHA_THRESHOLD) continue;
-
-      const alpha = Math.min(alphaMagnitude * alphaGain, MAX_ALPHA);
-      const oneMinusAlpha = 1 - alpha;
-      if (oneMinusAlpha < 0.02) continue;
+      const templateAlpha = Math.min(alphaMagnitude * alphaGain, MAX_ALPHA);
 
       const px = originX + col;
       const py = originY + ty;
       if (px < 0 || py < 0 || px >= width || py >= height) continue;
 
       const pi = (py * width + px) * 4;
+      const [bgR, bgG, bgB] = sampleLocalBackgroundRgb(
+        data,
+        width,
+        height,
+        px,
+        py,
+        originX,
+        originY,
+        size,
+        matte,
+      );
+      const lumAlpha = estimateLuminanceAlpha(
+        data[pi],
+        data[pi + 1],
+        data[pi + 2],
+        bgR,
+        bgG,
+        bgB,
+        brightWatermark,
+      );
+
+      let alpha = brightWatermark
+        ? Math.min(Math.max(templateAlpha, lumAlpha * alphaGain * 0.96), MAX_ALPHA)
+        : Math.min(Math.max(templateAlpha, lumAlpha * alphaGain * 0.96), MAX_ALPHA);
+
+      if (alphaMagnitude >= ALPHA_NOISE_FLOOR) {
+        const signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
+        if (signalAlpha >= ALPHA_THRESHOLD) {
+          alpha = brightWatermark
+            ? Math.min(Math.max(templateAlpha, lumAlpha * alphaGain), MAX_ALPHA)
+            : Math.min(Math.max(templateAlpha, lumAlpha * alphaGain), MAX_ALPHA);
+        }
+      }
+
+      if (alpha < 0.012 && lumAlpha < 0.02) continue;
+
+      if (alpha < 0.02 && lumAlpha >= 0.02) {
+        alpha = Math.min(lumAlpha * alphaGain * 0.92, MAX_ALPHA);
+      }
+
+      const oneMinusAlpha = 1 - alpha;
+      if (oneMinusAlpha < 0.02) continue;
+
       const logo =
         matteAlpha < 0
           ? [0, 0, 0]
@@ -156,6 +262,18 @@ export function applyGeminiTemplateInverseAlpha(
       let r = (data[pi] - alpha * logo[0]) / oneMinusAlpha;
       let g = (data[pi + 1] - alpha * logo[1]) / oneMinusAlpha;
       let b = (data[pi + 2] - alpha * logo[2]) / oneMinusAlpha;
+
+      if (brightWatermark) {
+        const hiTol = 5 + alpha * 8;
+        r = r > bgR + hiTol ? bgR + hiTol + (r - (bgR + hiTol)) * 0.2 : r;
+        g = g > bgG + hiTol ? bgG + hiTol + (g - (bgG + hiTol)) * 0.2 : g;
+        b = b > bgB + hiTol ? bgB + hiTol + (b - (bgB + hiTol)) * 0.2 : b;
+      } else {
+        const loTol = 5 + alpha * 8;
+        r = r < bgR - loTol ? bgR - loTol + (r - (bgR - loTol)) * 0.2 : r;
+        g = g < bgG - loTol ? bgG - loTol + (g - (bgG - loTol)) * 0.2 : g;
+        b = b < bgB - loTol ? bgB - loTol + (b - (bgB - loTol)) * 0.2 : b;
+      }
 
       data[pi] = clampChannel(r);
       data[pi + 1] = clampChannel(g);
@@ -517,6 +635,14 @@ function applyRefinedGeminiRemoval(
   );
 
   stabilizeGeminiRemovalToBackground(
+    copy,
+    source,
+    effectiveMatch,
+    template,
+    brightWatermark,
+  );
+
+  repairGeminiLuminanceResidual(
     copy,
     source,
     effectiveMatch,
