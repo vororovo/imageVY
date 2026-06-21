@@ -389,9 +389,12 @@ export function repairGeminiLuminanceResidual(
         const lumDiff = brightWatermark ? resultLum - bgLum : bgLum - resultLum;
         const origDiff = brightWatermark ? origLum - bgLum : bgLum - origLum;
 
-        if (lumDiff <= 3.5 || origDiff <= 4) continue;
+        if (origDiff <= 1.5 && lumDiff <= 1.5) continue;
 
-        const strength = Math.min(0.92, fringe * (0.35 + lumDiff / 28));
+        const strength = Math.min(
+          0.96,
+          fringe * (0.45 + Math.max(lumDiff, origDiff) / 22),
+        );
         r = r + (bgR - r) * strength;
         g = g + (bgG - g) * strength;
         b = b + (bgB - b) * strength;
@@ -400,6 +403,75 @@ export function repairGeminiLuminanceResidual(
         data[pi + 1] = clampChannel(g);
         data[pi + 2] = clampChannel(b);
       }
+    }
+  }
+}
+
+/**
+ * 알파 실루엔트 전체를 원본 배경 질감에 밀봉 — 별 윤곽·꼭짓점 잔광 제거
+ */
+export function sealGeminiMatteRegion(
+  imageData: ImageData,
+  originalSource: ImageData,
+  match: WatermarkMatchResult,
+  template: SparkleTemplate,
+  brightWatermark: boolean,
+): void {
+  const { data, width, height } = imageData;
+  const { size, alpha } = template;
+  const { x: ox, y: oy } = match;
+  const fallbackBg = estimateBackgroundRgb(originalSource.data, width, match, template);
+  const dilated = dilateAlphaMap(alpha, size, 4);
+
+  for (let ty = 0; ty < size; ty++) {
+    for (let tx = 0; tx < size; tx++) {
+      const idx = ty * size + tx;
+      const core = alpha[idx];
+      const dil = dilated[idx];
+      if (core < 0.004 && dil < 0.012) continue;
+
+      const px = ox + tx;
+      const py = oy + ty;
+      if (px < 0 || py < 0 || px >= width || py >= height) continue;
+
+      const pi = (py * width + px) * 4;
+      const [bgR, bgG, bgB] = sampleRingBackground(
+        originalSource.data,
+        width,
+        height,
+        px,
+        py,
+        match,
+        template,
+        dilated,
+        fallbackBg,
+      );
+
+      const origLum = pixelLuminance(
+        originalSource.data[pi],
+        originalSource.data[pi + 1],
+        originalSource.data[pi + 2],
+      );
+      const resultLum = pixelLuminance(data[pi], data[pi + 1], data[pi + 2]);
+      const bgLum = pixelLuminance(bgR, bgG, bgB);
+      const origDiff = brightWatermark ? origLum - bgLum : bgLum - origLum;
+      const residual = brightWatermark ? resultLum - bgLum : bgLum - resultLum;
+
+      if (origDiff <= 1.2 && residual <= 1.2) continue;
+
+      const matteWeight = Math.max(core, dil * 0.9);
+      const strength = Math.min(
+        0.94,
+        matteWeight * 0.55 + Math.max(origDiff, residual) / 24,
+      );
+
+      let r = data[pi] + (bgR - data[pi]) * strength;
+      let g = data[pi + 1] + (bgG - data[pi + 1]) * strength;
+      let b = data[pi + 2] + (bgB - data[pi + 2]) * strength;
+
+      data[pi] = clampChannel(r);
+      data[pi + 1] = clampChannel(g);
+      data[pi + 2] = clampChannel(b);
     }
   }
 }

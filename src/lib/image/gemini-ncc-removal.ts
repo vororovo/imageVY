@@ -23,6 +23,7 @@ import {
 import {
   applyGeminiEdgeFeather,
   repairGeminiLuminanceResidual,
+  sealGeminiMatteRegion,
   stabilizeGeminiRemovalToBackground,
   type GeminiEdgeFeatherOptions,
 } from "@/lib/image/gemini-edge-feather";
@@ -183,6 +184,7 @@ function estimateLuminanceAlpha(
  */
 export function applyGeminiTemplateInverseAlpha(
   imageData: ImageData,
+  originalSource: ImageData,
   match: WatermarkMatchResult,
   template: SparkleTemplate,
   options: GeminiNccOptions,
@@ -193,6 +195,7 @@ export function applyGeminiTemplateInverseAlpha(
       ? options.globalAlpha
       : 1;
   const { data, width, height } = imageData;
+  const origData = originalSource.data;
   const { size, alpha: matte } = template;
   const { x: originX, y: originY } = match;
 
@@ -211,8 +214,12 @@ export function applyGeminiTemplateInverseAlpha(
       if (px < 0 || py < 0 || px >= width || py >= height) continue;
 
       const pi = (py * width + px) * 4;
+      const origR = origData[pi];
+      const origG = origData[pi + 1];
+      const origB = origData[pi + 2];
+
       const [bgR, bgG, bgB] = sampleLocalBackgroundRgb(
-        data,
+        origData,
         width,
         height,
         px,
@@ -223,56 +230,55 @@ export function applyGeminiTemplateInverseAlpha(
         matte,
       );
       const lumAlpha = estimateLuminanceAlpha(
-        data[pi],
-        data[pi + 1],
-        data[pi + 2],
+        origR,
+        origG,
+        origB,
         bgR,
         bgG,
         bgB,
         brightWatermark,
       );
 
-      let alpha = brightWatermark
-        ? Math.min(Math.max(templateAlpha, lumAlpha * alphaGain * 0.96), MAX_ALPHA)
-        : Math.min(Math.max(templateAlpha, lumAlpha * alphaGain * 0.96), MAX_ALPHA);
+      let alpha = Math.min(
+        Math.max(templateAlpha, lumAlpha * alphaGain * 0.96),
+        MAX_ALPHA,
+      );
 
       if (alphaMagnitude >= ALPHA_NOISE_FLOOR) {
         const signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
         if (signalAlpha >= ALPHA_THRESHOLD) {
-          alpha = brightWatermark
-            ? Math.min(Math.max(templateAlpha, lumAlpha * alphaGain), MAX_ALPHA)
-            : Math.min(Math.max(templateAlpha, lumAlpha * alphaGain), MAX_ALPHA);
+          alpha = Math.min(Math.max(templateAlpha, lumAlpha * alphaGain), MAX_ALPHA);
         }
       }
 
-      if (alpha < 0.012 && lumAlpha < 0.02) continue;
+      if (alpha < 0.008 && lumAlpha < 0.015) continue;
 
-      if (alpha < 0.02 && lumAlpha >= 0.02) {
-        alpha = Math.min(lumAlpha * alphaGain * 0.92, MAX_ALPHA);
+      if (alpha < 0.02 && lumAlpha >= 0.015) {
+        alpha = Math.min(lumAlpha * alphaGain * 0.95, MAX_ALPHA);
       }
 
-      const oneMinusAlpha = 1 - alpha;
-      if (oneMinusAlpha < 0.02) continue;
-
-      const logo =
-        matteAlpha < 0
-          ? [0, 0, 0]
-          : [logoR, logoG, logoB];
-
-      let r = (data[pi] - alpha * logo[0]) / oneMinusAlpha;
-      let g = (data[pi + 1] - alpha * logo[1]) / oneMinusAlpha;
-      let b = (data[pi + 2] - alpha * logo[2]) / oneMinusAlpha;
+      let r: number;
+      let g: number;
+      let b: number;
 
       if (brightWatermark) {
-        const hiTol = 5 + alpha * 8;
-        r = r > bgR + hiTol ? bgR + hiTol + (r - (bgR + hiTol)) * 0.2 : r;
-        g = g > bgG + hiTol ? bgG + hiTol + (g - (bgG + hiTol)) * 0.2 : g;
-        b = b > bgB + hiTol ? bgB + hiTol + (b - (bgB + hiTol)) * 0.2 : b;
+        // pixel = bg + α×(255−bg) — 나눗셈 없이 안정적 (별 꼭짓점 고알파 포함)
+        r = origR - alpha * (255 - bgR);
+        g = origG - alpha * (255 - bgG);
+        b = origB - alpha * (255 - bgB);
       } else {
-        const loTol = 5 + alpha * 8;
-        r = r < bgR - loTol ? bgR - loTol + (r - (bgR - loTol)) * 0.2 : r;
-        g = g < bgG - loTol ? bgG - loTol + (g - (bgG - loTol)) * 0.2 : g;
-        b = b < bgB - loTol ? bgB - loTol + (b - (bgB - loTol)) * 0.2 : b;
+        const oneMinusAlpha = 1 - alpha;
+        const logo =
+          matteAlpha < 0 ? [0, 0, 0] : [logoR, logoG, logoB];
+        if (oneMinusAlpha < 0.03) {
+          r = origR + alpha * (bgR - origR);
+          g = origG + alpha * (bgG - origG);
+          b = origB + alpha * (bgB - origB);
+        } else {
+          r = (origR - alpha * logo[0]) / oneMinusAlpha;
+          g = (origG - alpha * logo[1]) / oneMinusAlpha;
+          b = (origB - alpha * logo[2]) / oneMinusAlpha;
+        }
       }
 
       data[pi] = clampChannel(r);
@@ -414,6 +420,7 @@ function applyRemovalWithGain(
   const copy = cloneImageData(source);
   applyGeminiTemplateInverseAlpha(
     copy,
+    source,
     match,
     template,
     { ...options, globalAlpha: alphaGain },
@@ -628,6 +635,7 @@ function applyRefinedGeminiRemoval(
   const copy = cloneImageData(imageData);
   applyGeminiTemplateInverseAlpha(
     copy,
+    source,
     effectiveMatch,
     template,
     { ...options, globalAlpha: effectiveGain },
@@ -643,6 +651,14 @@ function applyRefinedGeminiRemoval(
   );
 
   repairGeminiLuminanceResidual(
+    copy,
+    source,
+    effectiveMatch,
+    template,
+    brightWatermark,
+  );
+
+  sealGeminiMatteRegion(
     copy,
     source,
     effectiveMatch,

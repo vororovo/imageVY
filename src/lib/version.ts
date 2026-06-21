@@ -1,5 +1,5 @@
 /** 앱 버전 (표시 형식: XX.XX.XX) */
-export const APP_VERSION = "00.51.07";
+export const APP_VERSION = "00.51.08";
 
 export type VersionParts = {
   major: number;
