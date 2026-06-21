@@ -111,6 +111,26 @@ function detectBrightWatermark(
   return wmSum / wmCount > bgSum / bgCount;
 }
 
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(1e-6, edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** 원본이 배경보다 밝/어두운 정도 + 템플릿 일치도로 제거 강도 산출 */
+function watermarkRemovalStrength(
+  origLum: number,
+  bgLum: number,
+  templateAlpha: number,
+  lumAlpha: number,
+  alphaGain: number,
+  brightWatermark: boolean,
+): number {
+  const lumDelta = brightWatermark ? origLum - bgLum : bgLum - origLum;
+  const lumEvidence = smoothstep(3.5, 14, lumDelta);
+  const tplEvidence = smoothstep(0.02, 0.14, Math.max(templateAlpha, lumAlpha * 0.9));
+  return Math.min(0.995, lumEvidence * tplEvidence * alphaGain);
+}
+
 function sampleLocalBackgroundRgb(
   data: Uint8ClampedArray,
   width: number,
@@ -127,8 +147,8 @@ function sampleLocalBackgroundRgb(
   let bSum = 0;
   let weightSum = 0;
 
-  for (let dy = -5; dy <= 5; dy++) {
-    for (let dx = -5; dx <= 5; dx++) {
+  for (let dy = -8; dy <= 8; dy++) {
+    for (let dx = -8; dx <= 8; dx++) {
       const nx = px + dx;
       const ny = py + dy;
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
@@ -136,12 +156,12 @@ function sampleLocalBackgroundRgb(
       const tx = nx - originX;
       const ty = ny - originY;
       if (tx >= 0 && tx < templateSize && ty >= 0 && ty < templateSize) {
-        if (templateAlpha[ty * templateSize + tx] >= 0.035) continue;
+        if (templateAlpha[ty * templateSize + tx] >= 0.025) continue;
       }
 
       const dist = Math.hypot(dx, dy);
-      if (dist > 5) continue;
-      const w = 1 / (1 + dist * 0.4);
+      if (dist > 8 || dist < 0.5) continue;
+      const w = 1 / (1 + dist * 0.35);
       const pi = (ny * width + nx) * 4;
       rSum += data[pi] * w;
       gSum += data[pi + 1] * w;
@@ -178,9 +198,7 @@ function estimateLuminanceAlpha(
 }
 
 /**
- * 역알파 블렌딩 (GargantuaX blendModes.js 기반)
- * original = (watermarked - α × logo) / (1 - α)
- * 템플릿 알파 + 픽셀 밝기 추정 알파를 결합해 윤곽 잔광을 줄입니다.
+ * 워터마크 픽셀만 주변 배경 질감으로 보간 (어긋난 템플릿 영역은 건드리지 않음)
  */
 export function applyGeminiTemplateInverseAlpha(
   imageData: ImageData,
@@ -199,10 +217,6 @@ export function applyGeminiTemplateInverseAlpha(
   const { size, alpha: matte } = template;
   const { x: originX, y: originY } = match;
 
-  const logoR = brightWatermark ? 255 : options.logoColor.r;
-  const logoG = brightWatermark ? 255 : options.logoColor.g;
-  const logoB = brightWatermark ? 255 : options.logoColor.b;
-
   for (let ty = 0; ty < size; ty++) {
     for (let col = 0; col < size; col++) {
       const matteAlpha = matte[ty * size + col];
@@ -217,6 +231,7 @@ export function applyGeminiTemplateInverseAlpha(
       const origR = origData[pi];
       const origG = origData[pi + 1];
       const origB = origData[pi + 2];
+      const origLum = luminance(origR, origG, origB);
 
       const [bgR, bgG, bgB] = sampleLocalBackgroundRgb(
         origData,
@@ -229,6 +244,7 @@ export function applyGeminiTemplateInverseAlpha(
         size,
         matte,
       );
+      const bgLum = luminance(bgR, bgG, bgB);
       const lumAlpha = estimateLuminanceAlpha(
         origR,
         origG,
@@ -239,47 +255,20 @@ export function applyGeminiTemplateInverseAlpha(
         brightWatermark,
       );
 
-      let alpha = Math.min(
-        Math.max(templateAlpha, lumAlpha * alphaGain * 0.96),
-        MAX_ALPHA,
+      const strength = watermarkRemovalStrength(
+        origLum,
+        bgLum,
+        templateAlpha,
+        lumAlpha,
+        alphaGain,
+        brightWatermark,
       );
 
-      if (alphaMagnitude >= ALPHA_NOISE_FLOOR) {
-        const signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
-        if (signalAlpha >= ALPHA_THRESHOLD) {
-          alpha = Math.min(Math.max(templateAlpha, lumAlpha * alphaGain), MAX_ALPHA);
-        }
-      }
+      if (strength < 0.03) continue;
 
-      if (alpha < 0.008 && lumAlpha < 0.015) continue;
-
-      if (alpha < 0.02 && lumAlpha >= 0.015) {
-        alpha = Math.min(lumAlpha * alphaGain * 0.95, MAX_ALPHA);
-      }
-
-      let r: number;
-      let g: number;
-      let b: number;
-
-      if (brightWatermark) {
-        // pixel = bg + α×(255−bg) — 나눗셈 없이 안정적 (별 꼭짓점 고알파 포함)
-        r = origR - alpha * (255 - bgR);
-        g = origG - alpha * (255 - bgG);
-        b = origB - alpha * (255 - bgB);
-      } else {
-        const oneMinusAlpha = 1 - alpha;
-        const logo =
-          matteAlpha < 0 ? [0, 0, 0] : [logoR, logoG, logoB];
-        if (oneMinusAlpha < 0.03) {
-          r = origR + alpha * (bgR - origR);
-          g = origG + alpha * (bgG - origG);
-          b = origB + alpha * (bgB - origB);
-        } else {
-          r = (origR - alpha * logo[0]) / oneMinusAlpha;
-          g = (origG - alpha * logo[1]) / oneMinusAlpha;
-          b = (origB - alpha * logo[2]) / oneMinusAlpha;
-        }
-      }
+      const r = origR + (bgR - origR) * strength;
+      const g = origG + (bgG - origG) * strength;
+      const b = origB + (bgB - origB) * strength;
 
       data[pi] = clampChannel(r);
       data[pi + 1] = clampChannel(g);

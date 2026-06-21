@@ -389,11 +389,11 @@ export function repairGeminiLuminanceResidual(
         const lumDiff = brightWatermark ? resultLum - bgLum : bgLum - resultLum;
         const origDiff = brightWatermark ? origLum - bgLum : bgLum - origLum;
 
-        if (origDiff <= 1.5 && lumDiff <= 1.5) continue;
+        if (origDiff <= 4 && lumDiff <= 3) continue;
 
         const strength = Math.min(
-          0.96,
-          fringe * (0.45 + Math.max(lumDiff, origDiff) / 22),
+          0.88,
+          fringe * (0.4 + Math.max(lumDiff, origDiff) / 20),
         );
         r = r + (bgR - r) * strength;
         g = g + (bgG - g) * strength;
@@ -457,13 +457,15 @@ export function sealGeminiMatteRegion(
       const origDiff = brightWatermark ? origLum - bgLum : bgLum - origLum;
       const residual = brightWatermark ? resultLum - bgLum : bgLum - resultLum;
 
-      if (origDiff <= 1.2 && residual <= 1.2) continue;
+      if (origDiff <= 4 && residual <= 3) continue;
 
-      const matteWeight = Math.max(core, dil * 0.9);
+      const matteWeight = Math.max(core, dil * 0.85);
       const strength = Math.min(
-        0.94,
-        matteWeight * 0.55 + Math.max(origDiff, residual) / 24,
+        0.85,
+        matteWeight * 0.4 + Math.max(origDiff - 3, 0) / 22,
       );
+
+      if (strength < 0.08) continue;
 
       let r = data[pi] + (bgR - data[pi]) * strength;
       let g = data[pi + 1] + (bgG - data[pi + 1]) * strength;
