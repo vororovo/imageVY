@@ -36,6 +36,7 @@ type WatermarkPreviewCanvasProps = {
   geminiCache?: GeminiNccCache | null;
   geminiEdgeFeatherEnabled?: boolean;
   geminiEdgePaddingPx?: number;
+  geminiRemovalMode?: import("@/lib/image/gemini-matte-inpaint").GeminiRemovalMode;
   onDetectedRegion?: (region: Region) => void;
   onGeminiDetected?: (detected: boolean) => void;
   onGeminiCacheReady?: (cache: GeminiNccCache) => void;
@@ -71,6 +72,7 @@ export function WatermarkPreviewCanvas({
   geminiCache: externalCache = null,
   geminiEdgeFeatherEnabled = true,
   geminiEdgePaddingPx = 4,
+  geminiRemovalMode,
   onDetectedRegion,
   onGeminiDetected,
   onGeminiCacheReady,
@@ -284,6 +286,7 @@ export function WatermarkPreviewCanvas({
             paddingPx: geminiEdgePaddingPx,
           }
         : undefined,
+      geminiRemovalMode,
     });
 
     canvas.width = naturalWidth;
@@ -303,6 +306,7 @@ export function WatermarkPreviewCanvas({
     geminiManualMode,
     geminiEdgeFeatherEnabled,
     geminiEdgePaddingPx,
+    geminiRemovalMode,
     ensureGeminiCache,
   ]);
 

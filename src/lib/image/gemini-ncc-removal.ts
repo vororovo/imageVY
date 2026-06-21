@@ -28,13 +28,21 @@ import {
   type GeminiEdgeFeatherOptions,
 } from "@/lib/image/gemini-edge-feather";
 
-export type { GeminiEdgeFeatherOptions };
+import {
+  applyGeminiMatteInpaint,
+  DEFAULT_GEMINI_REMOVAL_MODE,
+  type GeminiRemovalMode,
+} from "@/lib/image/gemini-matte-inpaint";
+
+export type { GeminiRemovalMode };
+export { DEFAULT_GEMINI_REMOVAL_MODE };
 
 export type GeminiNccOptions = {
   /** 알파 맵 강도 보정 (1.0 = 보정 없음) */
   globalAlpha: number;
   logoColor: { r: number; g: number; b: number };
   edgeFeather?: GeminiEdgeFeatherOptions;
+  removalMode?: import("@/lib/image/gemini-matte-inpaint").GeminiRemovalMode;
 };
 
 export type GeminiNccCache = {
@@ -622,6 +630,24 @@ function applyRefinedGeminiRemoval(
       : { ...match, x: match.x + offsetX, y: match.y + offsetY };
 
   const copy = cloneImageData(imageData);
+  const removalMode = options.removalMode ?? DEFAULT_GEMINI_REMOVAL_MODE;
+  const paddingPx = options.edgeFeather?.enabled
+    ? options.edgeFeather.paddingPx
+    : 2;
+
+  if (removalMode === "texture-inpaint") {
+    applyGeminiMatteInpaint(
+      copy,
+      source,
+      effectiveMatch,
+      template,
+      brightWatermark,
+      paddingPx,
+    );
+    imageData.data.set(copy.data);
+    return;
+  }
+
   applyGeminiTemplateInverseAlpha(
     copy,
     source,

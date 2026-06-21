@@ -21,6 +21,7 @@ export type WatermarkProcessOptions = {
   geminiOptimized?: boolean;
   geminiCache?: GeminiNccCache;
   geminiEdgeFeather?: GeminiEdgeFeatherOptions;
+  geminiRemovalMode?: import("@/lib/image/gemini-matte-inpaint").GeminiRemovalMode;
 };
 
 export type WatermarkProcessResult = {
@@ -56,6 +57,7 @@ export function createProcessedWatermark(
       globalAlpha: options.alpha,
       logoColor: options.color,
       edgeFeather: options.geminiEdgeFeather,
+      removalMode: options.geminiRemovalMode,
     });
 
     return {

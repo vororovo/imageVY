@@ -48,6 +48,7 @@ import {
   type WatermarkMethod,
 } from "@/lib/image/watermark-removal";
 import { DEFAULT_GEMINI_EDGE_FEATHER } from "@/lib/image/gemini-edge-feather";
+import { DEFAULT_GEMINI_REMOVAL_MODE, type GeminiRemovalMode } from "@/lib/image/gemini-matte-inpaint";
 
 type Tab = "resize" | "watermark";
 
@@ -86,6 +87,9 @@ export default function ImageEditorPage() {
   );
   const [geminiEdgePaddingPx, setGeminiEdgePaddingPx] = useState(
     DEFAULT_GEMINI_EDGE_FEATHER.paddingPx,
+  );
+  const [geminiRemovalMode, setGeminiRemovalMode] = useState<GeminiRemovalMode>(
+    DEFAULT_GEMINI_REMOVAL_MODE,
   );
   const [maskLightboxOpen, setMaskLightboxOpen] = useState(false);
   const [previewLightboxOpen, setPreviewLightboxOpen] = useState(false);
@@ -499,6 +503,7 @@ export default function ImageEditorPage() {
                         geminiCache={geminiCache}
                         geminiEdgeFeatherEnabled={geminiEdgeFeatherEnabled}
                         geminiEdgePaddingPx={geminiEdgePaddingPx}
+                        geminiRemovalMode={geminiRemovalMode}
                         onDetectedRegion={geminiManualActive ? undefined : handleDetectedRegion}
                         onGeminiDetected={handleGeminiDetected}
                         onGeminiCacheReady={setGeminiCache}
@@ -678,15 +683,17 @@ export default function ImageEditorPage() {
                     </div>
                     {geminiManualActive && (
                       <p className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-                        수동 영역 기준 역알파 제거 적용됨 — 영역을 바꾸면 다시 버튼을 눌러 주세요.
+                        수동 영역 기준 Gemini 제거 적용됨 — 영역·제거 방식을 바꾸면 다시 버튼을 눌러 주세요.
                       </p>
                     )}
                     <GeminiEdgeFeatherControls
                       className="mt-4"
                       enabled={geminiEdgeFeatherEnabled}
                       paddingPx={geminiEdgePaddingPx}
+                      removalMode={geminiRemovalMode}
                       onEnabledChange={setGeminiEdgeFeatherEnabled}
                       onPaddingChange={setGeminiEdgePaddingPx}
+                      onRemovalModeChange={setGeminiRemovalMode}
                     />
                   </div>
 
@@ -1018,6 +1025,7 @@ export default function ImageEditorPage() {
               geminiCache={geminiCache}
               geminiEdgeFeatherEnabled={geminiEdgeFeatherEnabled}
               geminiEdgePaddingPx={geminiEdgePaddingPx}
+              geminiRemovalMode={geminiRemovalMode}
               zoomPercent={watermarkZoomPercent}
               onZoomPercentChange={setWatermarkZoomPercent}
               scrollPosition={watermarkScroll}
